@@ -9,6 +9,10 @@ def load_extension():
     cpp_sources = glob.glob(os.path.join("cpp", "*.cpp"))
     cuda_sources = glob.glob(os.path.join("cpp", "*.cu"))
 
+    # Exclude the standalone daemon from the python extension
+    if os.path.join("cpp", "npu_daemon.cpp") in cpp_sources:
+        cpp_sources.remove(os.path.join("cpp", "npu_daemon.cpp"))
+
     sources = cpp_sources
     with_cuda = False
     if torch.cuda.is_available() and len(cuda_sources) > 0:

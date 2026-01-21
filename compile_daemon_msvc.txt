@@ -1,0 +1,17 @@
+Compilation Instructions for NPU Daemon (Windows MSVC)
+=====================================================
+
+1. Open the "x64 Native Tools Command Prompt for VS 2019" (or 2022).
+2. Navigate to the project root directory.
+3. Run the following command:
+
+   cl.exe /EHsc /O2 cpp/npu_daemon.cpp /Fe:npu_daemon.exe
+
+4. Run the daemon:
+
+   npu_daemon.exe
+
+Note:
+- /EHsc enables C++ exceptions.
+- /O2 enables optimizations.
+- /Fe specifies the output executable name.
