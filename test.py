@@ -22,6 +22,12 @@ def test_implementation(ops_module, device="cpu"):
     # Run PyTorch reference
     c_ref = alpha * a + beta * b
 
+    print("Expected Answer:")
+    print(c_ref)
+    print("-----")
+    print("Custom Op Answer:")
+    print(c_custom)
+
     # Verify
     if torch.allclose(c_custom, c_ref, atol=1e-5):
         print(f"✅ Correctness check passed on {device}!")

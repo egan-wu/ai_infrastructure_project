@@ -40,7 +40,7 @@ def load_extension():
         extra_cuda_cflags=extra_cuda_cflags,
         extra_include_paths=include_dirs,
         # library_dirs=[os.path.join(cwd, "lib")], # load() doesn't always support library_dirs gracefully in all versions, but extra_ldflags can be used if needed.
-        verbose=True,
+        verbose=False,
         with_cuda=with_cuda
     )
     return module
