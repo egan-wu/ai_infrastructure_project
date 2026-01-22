@@ -5,13 +5,18 @@ import glob
 import platform
 
 def load_extension():
+    # Use absolute paths
+    cwd = os.path.dirname(os.path.abspath(__file__))
+    cpp_dir = os.path.join(cwd, "cpp")
+
     # Source detection
-    cpp_sources = glob.glob(os.path.join("cpp", "*.cpp"))
-    cuda_sources = glob.glob(os.path.join("cpp", "*.cu"))
+    cpp_sources = glob.glob(os.path.join(cpp_dir, "*.cpp"))
+    cuda_sources = glob.glob(os.path.join(cpp_dir, "*.cu"))
 
     # Exclude the standalone daemon from the python extension
-    if os.path.join("cpp", "npu_daemon.cpp") in cpp_sources:
-        cpp_sources.remove(os.path.join("cpp", "npu_daemon.cpp"))
+    daemon_src = os.path.join(cpp_dir, "npu_daemon.cpp")
+    if daemon_src in cpp_sources:
+        cpp_sources.remove(daemon_src)
 
     sources = cpp_sources
     with_cuda = False
@@ -32,19 +37,19 @@ def load_extension():
     if with_cuda:
         extra_cflags.append("-DWITH_CUDA")
 
-    # Paths
-    cwd = os.path.dirname(os.path.abspath(__file__))
+    # Include paths
     include_dirs = [os.path.join(cwd, "include")]
 
     # Load extension
+    # We use a distinct name to ensure it doesn't conflict easily,
+    # though in this fallback scenario we just want it to work.
     module = load(
         name="custom_ops_jit",
         sources=sources,
         extra_cflags=extra_cflags,
         extra_cuda_cflags=extra_cuda_cflags,
         extra_include_paths=include_dirs,
-        # library_dirs=[os.path.join(cwd, "lib")], # load() doesn't always support library_dirs gracefully in all versions, but extra_ldflags can be used if needed.
-        verbose=False,
+        verbose=True, # Verbose to show user it's compiling
         with_cuda=with_cuda
     )
     return module

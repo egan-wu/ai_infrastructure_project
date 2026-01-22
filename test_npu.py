@@ -4,15 +4,12 @@ import subprocess
 import sys
 import os
 import platform
-# We need to make sure we can import custom_ops.
-# If built in-place, it should be in the current directory.
-try:
-    import custom_ops
-except ImportError:
-    # Try adding build directory if needed, but usually setup.py build_ext --inplace is used.
-    pass
 
+# Import npu_device, which handles loading custom_ops (Static or JIT)
 import npu_device
+# For explicit exit call in test, we need access to the raw ops module.
+# We access it via npu_device.custom_ops to ensure we use the same one.
+custom_ops = npu_device.custom_ops
 
 def main():
     print("=== Testing Cross-Process NPU Simulation (Workflow) ===")

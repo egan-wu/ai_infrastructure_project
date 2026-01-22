@@ -1,5 +1,35 @@
 import torch
-import custom_ops
+import sys
+import os
+
+# Robust import logic for custom_ops
+custom_ops = None
+
+# 1. Try importing the installed/local static extension
+try:
+    import custom_ops as _static_ops
+    # 2. Check for staleness (ensure it has the new API)
+    if hasattr(_static_ops, 'h2d_copy'):
+        custom_ops = _static_ops
+    else:
+        print("[NPU Device] Warning: Found 'custom_ops' but it is missing 'h2d_copy'. It might be stale.")
+        print("[NPU Device] Will attempt to JIT compile the latest extension.")
+except ImportError:
+    pass
+
+# 3. Fallback to JIT compilation
+if custom_ops is None:
+    print("[NPU Device] 'custom_ops' not found or stale. JIT compiling extension...")
+    try:
+        # Ensure we can import jit_loader from the current directory
+        # (Assuming the script is run from the repo root)
+        sys.path.append(os.getcwd())
+        from jit_loader import load_extension
+        custom_ops = load_extension()
+    except Exception as e:
+        print(f"[NPU Device] Error: Failed to load extension via JIT. {e}")
+        print("[NPU Device] Please ensure you have run 'python setup.py build_ext --inplace' or have a working compiler.")
+        raise ImportError("Could not load custom_ops")
 
 class NPUTensor:
     def __init__(self, shape, offset, dtype=torch.float32):
