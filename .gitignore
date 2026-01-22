@@ -8,3 +8,5 @@ dist/
 *.egg-info/
 .ninja_log
 .ninja_deps
+npu_daemon
+npu_daemon.exe

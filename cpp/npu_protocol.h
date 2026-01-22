@@ -28,11 +28,20 @@ static const char* SHM_NAME = "/npu_shm";
 #endif
 static const size_t SHM_SIZE = 16 * 1024 * 1024; // 16 MB
 
+// OpCodes
+enum OpCode : uint32_t {
+    OP_H2D_COPY = 1,
+    OP_D2H_COPY = 2,
+    OP_COMPUTE_ADD = 3,
+    OP_EXIT = 4
+};
+
 // Protocol Structure
 struct NPUControl {
     uint32_t opcode;           // Instruction ID
-    uint64_t address_offset;   // Start address of data within shared buffer (bytes)
-    uint32_t size;             // Number of float elements
+    uint64_t src_offset;       // Start address of input data in SHM
+    uint64_t dst_offset;       // Destination address for the output in SHM
+    uint32_t size;             // Number of elements
     float scalar;              // Parameter for computation
 
     // Synchronization flags
@@ -58,7 +67,7 @@ public:
 #endif
 
     SharedMemoryHandler(const std::string& shm_name, size_t shm_size, bool server)
-        : name(shm_name), size(shm_size), is_server(server) {
+        : size(shm_size), is_server(server), name(shm_name) {
 
 #ifdef _WIN32
         if (is_server) {
