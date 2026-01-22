@@ -10,6 +10,8 @@ This project is a robust template for creating PyTorch C++ Extensions. It demons
 │   ├── bindings.cpp    # Pybind11 module definitions
 │   ├── ops.cpp         # CPU implementation using TensorAccessor
 │   ├── ops.h           # Header declarations
+│   ├── npu_daemon.cpp  # Standalone NPU Simulator Daemon
+│   ├── npu_protocol.h  # Shared Memory IPC Protocol
 │   └── cuda_ops.cu     # CUDA kernel skeleton
 ├── include/            # Directory for external headers
 ├── lib/                # Directory for external libraries
@@ -89,6 +91,49 @@ from jit_loader import load_extension
 
 custom_ops = load_extension()
 # Now you can use it just like the AOT module
+```
+
+## Cross-Process NPU Simulation
+
+This project includes a simulation of an NPU (Neural Processing Unit) running as a separate process (Daemon). The PyTorch extension communicates with this daemon using **Shared Memory**.
+
+### Architecture
+- **Protocol**: Defined in `cpp/npu_protocol.h` (Opcode, Size, Offset, Handshake Flags).
+- **Daemon (`cpp/npu_daemon.cpp`)**: Allocates shared memory (Server), waits for commands, performs a dummy computation, and signals completion.
+- **Client (`cpp/ops.cpp`)**: Connects to shared memory (Client), copies input tensor to SHM, triggers the daemon, waits for completion, and copies the result back.
+
+### Running the Simulation
+
+#### 1. Compile the Daemon
+
+**Windows (MSVC):**
+Open "x64 Native Tools Command Prompt" and run:
+```cmd
+cl.exe /EHsc /O2 cpp/npu_daemon.cpp /Fe:npu_daemon.exe
+```
+
+**Linux:**
+```bash
+g++ -O3 -pthread cpp/npu_daemon.cpp -o npu_daemon -lrt
+```
+
+#### 2. Run the Test
+
+The `test_npu.py` script automates the verification. On Linux, it compiles and starts the daemon automatically. **On Windows, you must start `npu_daemon.exe` manually before running the python script.**
+
+```bash
+python test_npu.py
+```
+
+**Example Output:**
+```
+[NPU Daemon] Starting...
+[NPU Core] Initialized.
+[NPU Daemon] Waiting for commands...
+...
+[Client] Calling NPU with scalar=10.0...
+[Client] Call took 0.0014s
+✅ NPU Verification Passed!
 ```
 
 ## Example Logic
