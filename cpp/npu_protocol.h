@@ -20,7 +20,6 @@
 #endif
 
 // Shared Memory Constants
-// On Windows, the name is typically "Local\\Name". On Linux, it's "/Name".
 #ifdef _WIN32
 static const char* SHM_NAME = "Local\\NPU_SHM";
 #else
@@ -33,21 +32,25 @@ enum OpCode : uint32_t {
     OP_H2D_COPY = 1,
     OP_D2H_COPY = 2,
     OP_COMPUTE_ADD = 3,
-    OP_EXIT = 4
+    OP_COMPUTE_MUL = 4,
+    OP_COMPUTE_MATMUL = 5,
+    OP_EXIT = 6
 };
 
 // Protocol Structure
 struct NPUControl {
     uint32_t opcode;           // Instruction ID
-    uint64_t src_offset;       // Start address of input data in SHM
+    uint64_t src_offset_1;     // Start address of input data 1 in SHM
+    uint64_t src_offset_2;     // Start address of input data 2 in SHM (if needed)
     uint64_t dst_offset;       // Destination address for the output in SHM
-    uint32_t size;             // Number of elements
-    float scalar;              // Parameter for computation
 
-    // Synchronization flags
-    // volatile is used to prevent compiler optimization, but atomic is better for portable concurrency.
-    // However, for raw SHM structs without C++ standard library shared layout, volatile bool or atomic_bool (if standard layout) is common.
-    // We will use volatile bool for simplicity in this C-style struct, but enforce memory barriers in code if needed.
+    // Dimensions for MatMul / Element-wise
+    uint32_t size_1;           // Total elements (for elementwise) or M (for MxK)
+    uint32_t size_2;           // K (for MxK * KxN)
+    uint32_t size_3;           // N (for KxN)
+
+    float scalar;              // Parameter for scalar computation (legacy/optional)
+
     volatile bool host_ready;
     volatile bool device_done;
 };
@@ -148,9 +151,8 @@ public:
         return static_cast<NPUControl*>(buffer);
     }
 
+    // Data start address helper
     void* get_data_start() {
-        // Data starts after the control struct
-        // We align to 64 bytes for good measure
         size_t offset = sizeof(NPUControl);
         if (offset % 64 != 0) {
             offset += 64 - (offset % 64);
