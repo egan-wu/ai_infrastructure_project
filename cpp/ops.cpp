@@ -134,9 +134,6 @@ public:
         void* ptr = static_cast<char*>(get_conn().shm.buffer) + offset;
         alloc_map[ptr] = aligned_n;
 
-        // Detailed log kept for safety, but reduced verbosity elsewhere
-        // std::cout << "[x_tpu Alloc] Bytes: " << n << ", Offset: " << offset << std::endl;
-
         return ptr;
     }
 
@@ -187,10 +184,7 @@ static NPUAllocator global_npu_allocator;
 
 uint64_t get_offset(const at::Tensor& t) {
     void* ptr = t.data_ptr();
-    if (!ptr) {
-        // Can be null if size is 0 or undefined
-        return 0;
-    }
+    if (!ptr) return 0;
     char* base = static_cast<char*>(get_conn().shm.buffer);
     return static_cast<char*>(ptr) - base;
 }
@@ -205,9 +199,10 @@ at::Tensor npu_empty(at::IntArrayRef size, std::optional<at::ScalarType> dtype, 
     for (auto s : size) nelement *= s;
     size_t bytes = nelement * sizeof(float);
 
+    // std::cout << "[x_tpu] npu_empty requesting " << bytes << " bytes." << std::endl;
+
     auto data_ptr = global_npu_allocator.allocate(bytes);
 
-    // Create StorageImpl using c10::Storage wrapper to ensure proper lifecycle
     auto storage_impl = c10::make_intrusive<c10::StorageImpl>(
         c10::StorageImpl::use_byte_size_t(),
         bytes,
@@ -216,45 +211,35 @@ at::Tensor npu_empty(at::IntArrayRef size, std::optional<at::ScalarType> dtype, 
         true
     );
 
-    // Create TensorImpl
     auto tensor = at::detail::make_tensor<c10::TensorImpl>(
         c10::DispatchKeySet(c10::DispatchKey::PrivateUse1),
         c10::scalarTypeToTypeMeta(dtype.value_or(at::kFloat)),
         c10::Device(c10::DeviceType::PrivateUse1, 0)
     );
 
-    // Link Storage
     tensor.unsafeGetTensorImpl()->set_storage_keep_dtype(std::move(storage_impl));
-
-    // Set Sizes
     tensor.unsafeGetTensorImpl()->set_sizes_contiguous(size);
 
     return tensor;
 }
 
 at::Tensor npu_empty_strided(at::IntArrayRef size, at::IntArrayRef stride, std::optional<at::ScalarType> dtype, std::optional<at::Layout> layout, std::optional<at::Device> device, std::optional<bool> pin_memory) {
-    // For now, we assume contiguous behavior for PrivateUse1 simple simulation
-    // Ideally we should verify strides match contiguous layout or support strides in allocator
+    // Ignoring strides for now
     return npu_empty(size, dtype, layout, device, pin_memory, std::nullopt);
 }
 
 // Native View Implementation (Metadata Alias)
 at::Tensor npu_view(const at::Tensor& self, at::IntArrayRef size) {
-    // Infer size (handle -1)
     auto inferred_size = at::infer_size(size, self.numel());
 
-    // Create an alias
     auto alias = at::detail::make_tensor<c10::TensorImpl>(
         c10::DispatchKeySet(c10::DispatchKey::PrivateUse1),
         self.dtype(),
         self.device()
     );
 
-    // Share storage
     alias.unsafeGetTensorImpl()->set_storage_keep_dtype(self.storage());
     alias.unsafeGetTensorImpl()->set_storage_offset(self.storage_offset());
-
-    // Set resolved size
     alias.unsafeGetTensorImpl()->set_sizes_contiguous(inferred_size);
 
     return alias;
@@ -273,7 +258,6 @@ at::Tensor npu_copy_from(const at::Tensor& self, const at::Tensor& dst, bool non
         void* dst_ptr = dst.data_ptr();
 
         if (dst_ptr == nullptr || src_ptr == nullptr) {
-             // If we reach here with valid nbytes > 0, it is fatal
              std::cerr << "FATAL: Null pointer in H2D copy" << std::endl;
              return dst;
         }
@@ -362,26 +346,54 @@ void npu_exit() {
 // ==========================================
 
 void npu_fallback(const c10::OperatorHandle& op, torch::jit::Stack* stack) {
-    // Only log if verbose debug needed, otherwise it clogs output during standard fallbacks like view/print
-    // std::cout << "[x_tpu Warning] Operator " << op.schema().operator_name() << " is not implemented. Falling back to CPU." << std::endl;
-
+    // Check if any tensor in stack is on x_tpu
     auto& arguments = *stack;
-    for (size_t i = 0; i < arguments.size(); ++i) {
-        if (arguments[i].isTensor()) {
-            at::Tensor t = arguments[i].toTensor();
+    bool needs_fallback = false;
+    for (const auto& arg : arguments) {
+        if (arg.isTensor()) {
+            auto t = arg.toTensor();
             if (t.defined() && t.device().type() == c10::DeviceType::PrivateUse1) {
-                arguments[i] = t.cpu();
+                needs_fallback = true;
+                break;
             }
         }
     }
 
-    op.callBoxed(stack);
+    if (!needs_fallback) {
+        // Just call boxed, maybe pure CPU op that somehow got here?
+        op.callBoxed(stack);
+        return;
+    }
 
+    std::cout << "[x_tpu Warning] Operator " << op.schema().operator_name() << " is not implemented. Falling back to CPU." << std::endl;
+
+    // 1. Move Inputs to CPU
     for (size_t i = 0; i < arguments.size(); ++i) {
         if (arguments[i].isTensor()) {
             at::Tensor t = arguments[i].toTensor();
+            if (t.defined() && t.device().type() == c10::DeviceType::PrivateUse1) {
+                // Direct robust copy using our primitives
+                at::Tensor cpu_t = at::empty_like(t, at::TensorOptions().device(c10::kCPU));
+                npu_copy_from(t, cpu_t, false);
+                arguments[i] = cpu_t;
+            }
+        }
+    }
+
+    // 2. Execute on CPU
+    op.callBoxed(stack);
+
+    // 3. Move Outputs back to X_TPU
+    for (size_t i = 0; i < arguments.size(); ++i) {
+        if (arguments[i].isTensor()) {
+            at::Tensor t = arguments[i].toTensor();
+            // If result is on CPU, move it back to NPU
             if (t.defined() && t.device().is_cpu()) {
-                arguments[i] = t.to(c10::Device(c10::DeviceType::PrivateUse1, 0));
+                at::Tensor npu_t = npu_empty(t.sizes(), t.scalar_type(), t.layout(),
+                                             c10::Device(c10::DeviceType::PrivateUse1, 0),
+                                             false, std::nullopt);
+                npu_copy_from(t, npu_t, false);
+                arguments[i] = npu_t;
             }
         }
     }
@@ -396,7 +408,7 @@ void init_x_tpu_extension() {
 TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
     m.impl("empty.memory_format", &npu_empty);
     m.impl("empty_strided", &npu_empty_strided);
-    m.impl("view", &npu_view); // Native view
+    m.impl("view", &npu_view);
     m.impl("_copy_from", &npu_copy_from);
     m.impl("_copy_from_and_resize", &npu_copy_from_and_resize);
 
