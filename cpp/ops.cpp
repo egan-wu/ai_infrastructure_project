@@ -192,7 +192,13 @@ static NPUAllocator global_npu_allocator;
 uint64_t get_offset(const at::Tensor& t) {
     void* ptr = t.data_ptr();
     if (!ptr) {
-        std::cerr << "[x_tpu ERROR] get_offset called with null data_ptr!" << std::endl;
+        std::cerr << "[x_tpu ERROR] get_offset called with null data_ptr! Tensor size: " << t.sizes() << std::endl;
+        // Print storage details
+        if (t.has_storage()) {
+             std::cerr << "  Storage data: " << t.storage().data() << std::endl;
+        } else {
+             std::cerr << "  No Storage!" << std::endl;
+        }
         return 0;
     }
     char* base = static_cast<char*>(get_conn().shm.buffer);
@@ -253,22 +259,58 @@ at::Tensor npu_empty_strided(at::IntArrayRef size, at::IntArrayRef stride, std::
     return npu_empty(size, dtype, layout, device, pin_memory, std::nullopt);
 }
 
+// Native View Implementation (Metadata Alias)
+at::Tensor npu_view(const at::Tensor& self, at::IntArrayRef size) {
+    std::cout << "[x_tpu] npu_view called with size: " << size << std::endl;
+
+    if (!self.has_storage()) {
+        std::cerr << "[x_tpu ERROR] npu_view input has no storage!" << std::endl;
+    } else {
+        std::cout << "  Input storage: " << self.storage().data() << ", data_ptr: " << self.data_ptr() << std::endl;
+    }
+
+    // Create an alias
+    auto alias = at::detail::make_tensor<c10::TensorImpl>(
+        c10::DispatchKeySet(c10::DispatchKey::PrivateUse1),
+        self.dtype(),
+        self.device()
+    );
+
+    // Share storage
+    alias.unsafeGetTensorImpl()->set_storage_keep_dtype(self.storage());
+    alias.unsafeGetTensorImpl()->set_storage_offset(self.storage_offset());
+
+    // Set new size/strides
+    // We assume contiguous input/output logic for simplicity in this NPU sim
+    alias.unsafeGetTensorImpl()->set_sizes_contiguous(size);
+
+    std::cout << "  Output alias data_ptr: " << alias.data_ptr() << std::endl;
+
+    return alias;
+}
+
 at::Tensor npu_copy_from(const at::Tensor& self, const at::Tensor& dst, bool non_blocking) {
     std::cout << "[x_tpu] npu_copy_from called" << std::endl;
 
     bool dst_is_npu = dst.device().type() == c10::DeviceType::PrivateUse1;
     bool src_is_npu = self.device().type() == c10::DeviceType::PrivateUse1;
 
+    size_t nbytes = self.nbytes();
+    std::cout << "  Bytes: " << nbytes << std::endl;
+
+    // Graceful 0-byte check
+    if (nbytes == 0) {
+        std::cout << "  0-byte copy detected. Skipping." << std::endl;
+        return dst;
+    }
+
     if (dst_is_npu && !src_is_npu) {
         // H2D
         std::cout << "[x_tpu] H2D Copy" << std::endl;
         void* src_ptr = self.data_ptr();
         void* dst_ptr = dst.data_ptr();
-        size_t nbytes = self.nbytes();
 
-        std::cout << "  Dst Ptr: " << dst_ptr << ", Src Ptr: " << src_ptr << ", Bytes: " << nbytes << std::endl;
-        std::cout << "  Dst Sizes: " << dst.sizes() << std::endl;
-        std::cout << "  Dst Storage Data: " << dst.storage().data() << std::endl;
+        std::cout << "  Dst Ptr: " << dst_ptr << ", Src Ptr: " << src_ptr << std::endl;
 
         if (dst_ptr == nullptr || src_ptr == nullptr) {
              std::cerr << "FATAL: Null pointer in H2D copy" << std::endl;
@@ -285,9 +327,8 @@ at::Tensor npu_copy_from(const at::Tensor& self, const at::Tensor& dst, bool non
 
         void* src_ptr = self.data_ptr();
         void* dst_ptr = dst.data_ptr();
-        size_t nbytes = self.nbytes();
 
-        std::cout << "  Dst Ptr: " << dst_ptr << ", Src Ptr: " << src_ptr << ", Bytes: " << nbytes << std::endl;
+        std::cout << "  Dst Ptr: " << dst_ptr << ", Src Ptr: " << src_ptr << std::endl;
 
         if (dst_ptr == nullptr || src_ptr == nullptr) {
              std::cerr << "FATAL: Null pointer in D2H copy" << std::endl;
@@ -401,6 +442,7 @@ void init_x_tpu_extension() {
 TORCH_LIBRARY_IMPL(aten, PrivateUse1, m) {
     m.impl("empty.memory_format", &npu_empty);
     m.impl("empty_strided", &npu_empty_strided);
+    m.impl("view", &npu_view); // Native view
     m.impl("_copy_from", &npu_copy_from);
     m.impl("_copy_from_and_resize", &npu_copy_from_and_resize);
 
