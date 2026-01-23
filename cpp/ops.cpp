@@ -104,7 +104,6 @@ struct Block {
 
 class NPUAllocatorState {
 private:
-    // FIX: Make constants static constexpr to avoid initialization order bugs
     static constexpr uint64_t max_size = SHM_SIZE;
     static constexpr uint64_t start_offset = 256;
 
@@ -148,7 +147,6 @@ public:
         void* ptr = static_cast<char*>(get_conn().shm.buffer) + offset;
         alloc_map[ptr] = aligned_n;
 
-        // Log offset to confirm fix
         std::cout << "[x_tpu Alloc] Offset: " << offset << std::endl;
 
         return ptr;
@@ -243,7 +241,6 @@ at::Tensor npu_empty_strided(at::IntArrayRef size, at::IntArrayRef stride, std::
     return npu_empty(size, dtype, layout, device, pin_memory, std::nullopt);
 }
 
-// Native View Implementation (Metadata Alias)
 at::Tensor npu_view(const at::Tensor& self, at::IntArrayRef size) {
     auto inferred_size = at::infer_size(size, self.numel());
 
@@ -322,6 +319,7 @@ at::Tensor npu_mul(const at::Tensor& self, const at::Tensor& other) {
     get_conn().submit_command(OP_COMPUTE_MUL,
                               get_offset(self), get_offset(other), get_offset(out),
                               self.numel(), 0, 0);
+    debug_print_shm(get_offset(out), out.numel(), "After Mul");
     return out;
 }
 
@@ -334,6 +332,7 @@ at::Tensor npu_mm(const at::Tensor& self, const at::Tensor& other) {
     get_conn().submit_command(OP_COMPUTE_MATMUL,
                               get_offset(self), get_offset(other), get_offset(out),
                               M, K, N);
+    debug_print_shm(get_offset(out), out.numel(), "After MM");
     return out;
 }
 
@@ -364,12 +363,15 @@ void npu_exit() {
 // ==========================================
 
 void npu_fallback(const c10::OperatorHandle& op, torch::jit::Stack* stack) {
+    std::cout << "[x_tpu Fallback] Entered: " << op.schema().operator_name() << std::endl;
+
     auto& arguments = *stack;
     for (size_t i = 0; i < arguments.size(); ++i) {
         if (arguments[i].isTensor()) {
             at::Tensor t = arguments[i].toTensor();
             if (t.defined() && t.device().type() == c10::DeviceType::PrivateUse1) {
                 // Direct copy
+                // std::cout << "  Input " << i << " -> CPU" << std::endl;
                 at::Tensor cpu_t = at::empty_like(t, at::TensorOptions().device(c10::kCPU));
                 npu_copy_from(t, cpu_t, false);
                 arguments[i] = cpu_t;
@@ -383,6 +385,7 @@ void npu_fallback(const c10::OperatorHandle& op, torch::jit::Stack* stack) {
         if (arguments[i].isTensor()) {
             at::Tensor t = arguments[i].toTensor();
             if (t.defined() && t.device().is_cpu()) {
+                // std::cout << "  Output " << i << " -> NPU" << std::endl;
                 at::Tensor npu_t = npu_empty(t.sizes(), t.scalar_type(), t.layout(),
                                              c10::Device(c10::DeviceType::PrivateUse1, 0),
                                              false, std::nullopt);
@@ -391,6 +394,7 @@ void npu_fallback(const c10::OperatorHandle& op, torch::jit::Stack* stack) {
             }
         }
     }
+    std::cout << "[x_tpu Fallback] Done." << std::endl;
 }
 
 void init_x_tpu_extension() {
