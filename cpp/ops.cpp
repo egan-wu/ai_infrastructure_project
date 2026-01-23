@@ -104,9 +104,11 @@ struct Block {
 
 class NPUAllocatorState {
 private:
+    // FIX: Make constants static constexpr to avoid initialization order bugs
+    static constexpr uint64_t max_size = SHM_SIZE;
+    static constexpr uint64_t start_offset = 256;
+
     uint64_t head_offset;
-    const uint64_t max_size = SHM_SIZE;
-    const uint64_t start_offset = 256;
     std::vector<Block> freed_blocks;
     std::map<void*, size_t> alloc_map;
     std::mutex mutex;
@@ -145,6 +147,9 @@ public:
         }
         void* ptr = static_cast<char*>(get_conn().shm.buffer) + offset;
         alloc_map[ptr] = aligned_n;
+
+        // Log offset to confirm fix
+        std::cout << "[x_tpu Alloc] Offset: " << offset << std::endl;
 
         return ptr;
     }
@@ -211,8 +216,6 @@ at::Tensor npu_empty(at::IntArrayRef size, std::optional<at::ScalarType> dtype, 
     for (auto s : size) nelement *= s;
     size_t bytes = nelement * sizeof(float);
 
-    // std::cout << "[x_tpu] npu_empty requesting " << bytes << " bytes." << std::endl;
-
     auto data_ptr = global_npu_allocator.allocate(bytes);
 
     auto storage_impl = c10::make_intrusive<c10::StorageImpl>(
@@ -236,9 +239,11 @@ at::Tensor npu_empty(at::IntArrayRef size, std::optional<at::ScalarType> dtype, 
 }
 
 at::Tensor npu_empty_strided(at::IntArrayRef size, at::IntArrayRef stride, std::optional<at::ScalarType> dtype, std::optional<at::Layout> layout, std::optional<at::Device> device, std::optional<bool> pin_memory) {
+    // Ignoring strides for now
     return npu_empty(size, dtype, layout, device, pin_memory, std::nullopt);
 }
 
+// Native View Implementation (Metadata Alias)
 at::Tensor npu_view(const at::Tensor& self, at::IntArrayRef size) {
     auto inferred_size = at::infer_size(size, self.numel());
 
