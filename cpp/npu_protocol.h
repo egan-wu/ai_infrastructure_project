@@ -34,7 +34,8 @@ enum OpCode : uint32_t {
     OP_COMPUTE_ADD = 3,
     OP_COMPUTE_MUL = 4,
     OP_COMPUTE_MATMUL = 5,
-    OP_EXIT = 6
+    OP_EXIT = 6,
+    OP_COMPUTE_SUB = 7
 };
 
 // Protocol Structure

@@ -3,6 +3,7 @@
 #include <vector>
 #include <thread>
 #include <atomic>
+#include <iomanip>
 
 // This class simulates the NPU Core.
 class NPUCore {
@@ -11,18 +12,17 @@ public:
         std::cout << "[NPU Core] Initialized." << std::endl;
     }
 
-    void compute_add(float* src1, float* dst, size_t count, float scalar) {
-        // If scalar is used, we add scalar. If src2 was supported, we would use it.
-        // For simplicity, let's assume this is src1 + scalar
-        for (size_t i = 0; i < count; ++i) {
-            dst[i] = src1[i] + scalar;
-        }
-    }
-
     // Element-wise addition of two tensors
     void compute_add_tensors(float* src1, float* src2, float* dst, size_t count) {
         for (size_t i = 0; i < count; ++i) {
             dst[i] = src1[i] + src2[i];
+        }
+    }
+
+    // Element-wise subtraction of two tensors
+    void compute_sub_tensors(float* src1, float* src2, float* dst, size_t count) {
+        for (size_t i = 0; i < count; ++i) {
+            dst[i] = src1[i] - src2[i];
         }
     }
 
@@ -52,6 +52,14 @@ public:
         }
     }
 };
+
+void log_command(const std::string& op_name, uint64_t src1, uint64_t src2, uint64_t dst, uint32_t size) {
+    std::cout << "[NPU Daemon] Executing " << op_name
+              << " | Src1: 0x" << std::hex << src1
+              << ", Src2: 0x" << src2
+              << ", Dst: 0x" << dst
+              << ", Size: " << std::dec << size << std::endl;
+}
 
 int main() {
     std::cout << "[NPU Daemon] Starting..." << std::endl;
@@ -89,21 +97,7 @@ int main() {
                     break;
 
                 case OP_COMPUTE_ADD: {
-                    // Decide if scalar or tensor add based on src_offset_2
-                    // Logic: if src_offset_2 is 0 (or same as src1 in some designs, but let's assume 0 implies unused for now?)
-                    // Actually, let's look at how we will invoke it.
-                    // To keep it simple: If scalar != 0, we do scalar add. If scalar == 0, we do tensor add?
-                    // No, that's ambiguous. Let's assume if src_offset_2 is valid (e.g. > 0), it's tensor add.
-                    // But 0 is a valid offset (technically).
-                    // Let's assume the Host sets a convention.
-                    // For this iteration, let's treat OP_COMPUTE_ADD as Tensor + Tensor if src_offset_2 != src_offset_1 (if we support broadcasting 0??)
-                    // Let's just implement Tensor + Tensor for now as requested by aten::add.Tensor.
-                    // If scalar is needed, we might need a separate opcode or flag.
-                    // Wait, the previous implementation was scalar add.
-                    // We need to support both or update. The requirement is `aten::add.Tensor`.
-
                     size_t bytes_needed = ctrl->size_1 * sizeof(float);
-                    // Bounds check
                     if (ctrl->src_offset_1 + bytes_needed > SHM_SIZE ||
                         ctrl->src_offset_2 + bytes_needed > SHM_SIZE ||
                         ctrl->dst_offset + bytes_needed > SHM_SIZE) {
@@ -113,8 +107,25 @@ int main() {
                         float* src2 = reinterpret_cast<float*>(base_addr + ctrl->src_offset_2);
                         float* dst = reinterpret_cast<float*>(base_addr + ctrl->dst_offset);
 
-                        std::cout << "[NPU Daemon] OP_ADD (Tensor): Size=" << ctrl->size_1 << std::endl;
+                        log_command("OP_ADD", ctrl->src_offset_1, ctrl->src_offset_2, ctrl->dst_offset, ctrl->size_1);
                         core.compute_add_tensors(src1, src2, dst, ctrl->size_1);
+                    }
+                    break;
+                }
+
+                case OP_COMPUTE_SUB: {
+                    size_t bytes_needed = ctrl->size_1 * sizeof(float);
+                    if (ctrl->src_offset_1 + bytes_needed > SHM_SIZE ||
+                        ctrl->src_offset_2 + bytes_needed > SHM_SIZE ||
+                        ctrl->dst_offset + bytes_needed > SHM_SIZE) {
+                         std::cerr << "[NPU Daemon] Error: Memory access out of bounds!" << std::endl;
+                    } else {
+                        float* src1 = reinterpret_cast<float*>(base_addr + ctrl->src_offset_1);
+                        float* src2 = reinterpret_cast<float*>(base_addr + ctrl->src_offset_2);
+                        float* dst = reinterpret_cast<float*>(base_addr + ctrl->dst_offset);
+
+                        log_command("OP_SUB", ctrl->src_offset_1, ctrl->src_offset_2, ctrl->dst_offset, ctrl->size_1);
+                        core.compute_sub_tensors(src1, src2, dst, ctrl->size_1);
                     }
                     break;
                 }
@@ -130,14 +141,13 @@ int main() {
                         float* src2 = reinterpret_cast<float*>(base_addr + ctrl->src_offset_2);
                         float* dst = reinterpret_cast<float*>(base_addr + ctrl->dst_offset);
 
-                        std::cout << "[NPU Daemon] OP_MUL: Size=" << ctrl->size_1 << std::endl;
+                        log_command("OP_MUL", ctrl->src_offset_1, ctrl->src_offset_2, ctrl->dst_offset, ctrl->size_1);
                         core.compute_mul(src1, src2, dst, ctrl->size_1);
                     }
                     break;
                 }
 
                 case OP_COMPUTE_MATMUL: {
-                    // src1: MxK, src2: KxN, dst: MxN
                     uint32_t M = ctrl->size_1;
                     uint32_t K = ctrl->size_2;
                     uint32_t N = ctrl->size_3;
@@ -155,7 +165,11 @@ int main() {
                         float* src2 = reinterpret_cast<float*>(base_addr + ctrl->src_offset_2);
                         float* dst = reinterpret_cast<float*>(base_addr + ctrl->dst_offset);
 
-                        std::cout << "[NPU Daemon] OP_MATMUL: " << M << "x" << K << " * " << K << "x" << N << std::endl;
+                        std::cout << "[NPU Daemon] Executing OP_MATMUL | "
+                                  << "Src1: 0x" << std::hex << ctrl->src_offset_1
+                                  << ", Src2: 0x" << ctrl->src_offset_2
+                                  << ", Dst: 0x" << ctrl->dst_offset
+                                  << ", Size: " << std::dec << M << "x" << N << std::endl;
                         core.compute_matmul(src1, src2, dst, M, K, N);
                     }
                     break;

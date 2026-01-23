@@ -32,7 +32,7 @@ public:
 
     // Synchronous Dispatch
     void submit_command(OpCode op, uint64_t src1, uint64_t src2, uint64_t dst,
-                        uint32_t s1, uint32_t s2, uint32_t s3) {
+                        uint32_t s1, uint32_t s2, uint32_t s3, float scalar = 0.0f) {
         std::lock_guard<std::mutex> lock(cmd_mutex);
         check_connection();
         NPUControl* ctrl = shm.get_control();
@@ -53,6 +53,7 @@ public:
         ctrl->size_1 = s1;
         ctrl->size_2 = s2;
         ctrl->size_3 = s3;
+        ctrl->scalar = scalar;
 
         ctrl->device_done = false;
 
@@ -109,7 +110,7 @@ private:
 
     uint64_t head_offset;
     std::vector<Block> freed_blocks;
-    std::map<void*, size_t> alloc_map;
+    std::map<uint64_t, size_t> alloc_map;
     std::mutex mutex;
 
 public:
@@ -141,27 +142,20 @@ public:
             head_offset += aligned_n;
         }
 
-        if (!get_conn().shm.is_valid()) {
-             TORCH_CHECK(false, "Shared Memory invalid during allocation.");
-        }
-        void* ptr = static_cast<char*>(get_conn().shm.buffer) + offset;
-        alloc_map[ptr] = aligned_n;
+        alloc_map[offset] = aligned_n;
 
-        std::cout << "[x_tpu Alloc] Offset: " << offset << std::endl;
-
-        return ptr;
+        // Return offset disguised as pointer
+        return reinterpret_cast<void*>(offset);
     }
 
     void free(void* ptr) {
         std::lock_guard<std::mutex> lock(mutex);
-        if (alloc_map.count(ptr)) {
-            size_t size = alloc_map[ptr];
-            if (get_conn().shm.is_valid()) {
-                char* base = static_cast<char*>(get_conn().shm.buffer);
-                uint64_t offset = static_cast<char*>(ptr) - base;
-                freed_blocks.push_back({offset, size});
-            }
-            alloc_map.erase(ptr);
+        uint64_t offset = reinterpret_cast<uint64_t>(ptr);
+
+        if (alloc_map.count(offset)) {
+            size_t size = alloc_map[offset];
+            freed_blocks.push_back({offset, size});
+            alloc_map.erase(offset);
         }
     }
 };
@@ -187,6 +181,12 @@ public:
     }
 
     void copy_data(void* dest, const void* src, std::size_t count) const override {
+        // This is called by PyTorch for CPU-CPU copies, but for us?
+        // If one of them is NPU, we need to handle it.
+        // But c10::Allocator::copy_data is rarely called directly for devices?
+        // Safe implementation assuming virtual pointers if called?
+        // But our pointers are offsets.
+        // This method is generally for CPU allocators.
         std::memcpy(dest, src, count);
     }
 };
@@ -198,14 +198,46 @@ static NPUAllocator global_npu_allocator;
 // ==========================================
 
 uint64_t get_offset(const at::Tensor& t) {
-    void* ptr = t.data_ptr();
-    if (!ptr) return 0;
+    // DataPtr is already the offset
+    return reinterpret_cast<uint64_t>(t.data_ptr());
+}
+
+void* resolve_ptr(void* ptr) {
+    if (!ptr) return nullptr;
     char* base = static_cast<char*>(get_conn().shm.buffer);
-    return static_cast<char*>(ptr) - base;
+    uint64_t offset = reinterpret_cast<uint64_t>(ptr);
+    return base + offset;
 }
 
 // ==========================================
-// 4. Kernel Implementations
+// 4. Manual Driver API
+// ==========================================
+
+void npu_ioctl(const std::string& op_code, uintptr_t src1, uintptr_t src2, uintptr_t dst, uint32_t size) {
+    OpCode code;
+    if (op_code == "OP_ADD") code = OP_COMPUTE_ADD;
+    else if (op_code == "OP_SUB") code = OP_COMPUTE_SUB;
+    else if (op_code == "OP_MUL") code = OP_COMPUTE_MUL;
+    else if (op_code == "OP_MATMUL") code = OP_COMPUTE_MATMUL;
+    else if (op_code == "OP_H2D_COPY") code = OP_H2D_COPY;
+    else if (op_code == "OP_D2H_COPY") code = OP_D2H_COPY;
+    else if (op_code == "OP_EXIT") code = OP_EXIT;
+    else {
+         std::cerr << "[x_tpu] Unknown OpCode string: " << op_code << std::endl;
+         return;
+    }
+
+    // Input pointers are already offsets
+    get_conn().submit_command(code, (uint64_t)src1, (uint64_t)src2, (uint64_t)dst, size, 0, 0);
+}
+
+void npu_wait() {
+    get_conn().check_connection();
+}
+
+
+// ==========================================
+// 5. Kernel Implementations
 // ==========================================
 
 at::Tensor npu_empty(at::IntArrayRef size, std::optional<at::ScalarType> dtype, std::optional<at::Layout> layout, std::optional<at::Device> device, std::optional<bool> pin_memory, std::optional<at::MemoryFormat> memory_format) {
@@ -237,7 +269,6 @@ at::Tensor npu_empty(at::IntArrayRef size, std::optional<at::ScalarType> dtype, 
 }
 
 at::Tensor npu_empty_strided(at::IntArrayRef size, at::IntArrayRef stride, std::optional<at::ScalarType> dtype, std::optional<at::Layout> layout, std::optional<at::Device> device, std::optional<bool> pin_memory) {
-    // Ignoring strides for now
     return npu_empty(size, dtype, layout, device, pin_memory, std::nullopt);
 }
 
@@ -267,7 +298,7 @@ at::Tensor npu_copy_from(const at::Tensor& self, const at::Tensor& dst, bool non
     if (dst_is_npu && !src_is_npu) {
         // H2D
         void* src_ptr = self.data_ptr();
-        void* dst_ptr = dst.data_ptr();
+        void* dst_ptr = resolve_ptr(dst.data_ptr()); // Resolve offset to pointer
 
         if (dst_ptr == nullptr || src_ptr == nullptr) {
              std::cerr << "FATAL: Null pointer in H2D copy" << std::endl;
@@ -275,15 +306,13 @@ at::Tensor npu_copy_from(const at::Tensor& self, const at::Tensor& dst, bool non
         }
 
         std::memcpy(dst_ptr, src_ptr, nbytes);
-        debug_print_shm(get_offset(dst), nbytes / sizeof(float), "After H2D");
         get_conn().submit_command(OP_H2D_COPY, get_offset(dst), 0, 0, 0, 0, 0);
 
     } else if (src_is_npu && !dst_is_npu) {
         // D2H
-        debug_print_shm(get_offset(self), nbytes / sizeof(float), "Before D2H");
         get_conn().submit_command(OP_D2H_COPY, get_offset(self), 0, 0, 0, 0, 0);
 
-        void* src_ptr = self.data_ptr();
+        void* src_ptr = resolve_ptr(self.data_ptr()); // Resolve offset to pointer
         void* dst_ptr = dst.data_ptr();
 
         if (dst_ptr == nullptr || src_ptr == nullptr) {
@@ -294,8 +323,10 @@ at::Tensor npu_copy_from(const at::Tensor& self, const at::Tensor& dst, bool non
         std::memcpy(dst_ptr, src_ptr, nbytes);
 
     } else if (src_is_npu && dst_is_npu) {
-         // D2D
-         std::memcpy(dst.data_ptr(), self.data_ptr(), self.nbytes());
+         // D2D (internal copy)
+         void* src_ptr = resolve_ptr(self.data_ptr());
+         void* dst_ptr = resolve_ptr(dst.data_ptr());
+         std::memcpy(dst_ptr, src_ptr, self.nbytes());
     }
 
     return dst;
@@ -307,10 +338,12 @@ at::Tensor npu_copy_from_and_resize(const at::Tensor& self, const at::Tensor& ds
 
 at::Tensor npu_add(const at::Tensor& self, const at::Tensor& other, const at::Scalar& alpha) {
     auto out = at::empty_like(self);
+    // Convert alpha to float
+    float scalar = alpha.to<float>();
+
     get_conn().submit_command(OP_COMPUTE_ADD,
                               get_offset(self), get_offset(other), get_offset(out),
-                              self.numel(), 0, 0);
-    debug_print_shm(get_offset(out), out.numel(), "After Add");
+                              self.numel(), 0, 0, scalar);
     return out;
 }
 
@@ -319,7 +352,6 @@ at::Tensor npu_mul(const at::Tensor& self, const at::Tensor& other) {
     get_conn().submit_command(OP_COMPUTE_MUL,
                               get_offset(self), get_offset(other), get_offset(out),
                               self.numel(), 0, 0);
-    debug_print_shm(get_offset(out), out.numel(), "After Mul");
     return out;
 }
 
@@ -332,12 +364,12 @@ at::Tensor npu_mm(const at::Tensor& self, const at::Tensor& other) {
     get_conn().submit_command(OP_COMPUTE_MATMUL,
                               get_offset(self), get_offset(other), get_offset(out),
                               M, K, N);
-    debug_print_shm(get_offset(out), out.numel(), "After MM");
     return out;
 }
 
 // Legacy
 void h2d_copy(torch::Tensor src, uint64_t offset) {
+    // Offset is passed directly
     char* base = static_cast<char*>(get_conn().shm.buffer);
     if (offset + src.nbytes() > SHM_SIZE) return;
     std::memcpy(base + offset, src.data_ptr(), src.nbytes());
@@ -359,19 +391,16 @@ void npu_exit() {
 }
 
 // ==========================================
-// 5. Registration
+// 6. Registration
 // ==========================================
 
 void npu_fallback(const c10::OperatorHandle& op, torch::jit::Stack* stack) {
-    std::cout << "[x_tpu Fallback] Entered: " << op.schema().operator_name() << std::endl;
-
     auto& arguments = *stack;
     for (size_t i = 0; i < arguments.size(); ++i) {
         if (arguments[i].isTensor()) {
             at::Tensor t = arguments[i].toTensor();
             if (t.defined() && t.device().type() == c10::DeviceType::PrivateUse1) {
                 // Direct copy
-                // std::cout << "  Input " << i << " -> CPU" << std::endl;
                 at::Tensor cpu_t = at::empty_like(t, at::TensorOptions().device(c10::kCPU));
                 npu_copy_from(t, cpu_t, false);
                 arguments[i] = cpu_t;
@@ -385,7 +414,6 @@ void npu_fallback(const c10::OperatorHandle& op, torch::jit::Stack* stack) {
         if (arguments[i].isTensor()) {
             at::Tensor t = arguments[i].toTensor();
             if (t.defined() && t.device().is_cpu()) {
-                // std::cout << "  Output " << i << " -> NPU" << std::endl;
                 at::Tensor npu_t = npu_empty(t.sizes(), t.scalar_type(), t.layout(),
                                              c10::Device(c10::DeviceType::PrivateUse1, 0),
                                              false, std::nullopt);
@@ -394,7 +422,6 @@ void npu_fallback(const c10::OperatorHandle& op, torch::jit::Stack* stack) {
             }
         }
     }
-    std::cout << "[x_tpu Fallback] Done." << std::endl;
 }
 
 void init_x_tpu_extension() {
