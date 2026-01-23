@@ -20,6 +20,8 @@ public:
     NPUConnection() : shm(SHM_NAME, SHM_SIZE, false) {
         if (!shm.is_valid()) {
             std::cerr << "[x_tpu] FATAL: Failed to connect to NPU Daemon shared memory." << std::endl;
+        } else {
+            std::cout << "[x_tpu] Connected to SHM. Base Address: " << shm.buffer << std::endl;
         }
     }
 
@@ -134,6 +136,10 @@ public:
         }
         void* ptr = static_cast<char*>(get_conn().shm.buffer) + offset;
         alloc_map[ptr] = aligned_n;
+
+        std::cout << "[x_tpu Alloc] Bytes: " << n << ", Aligned: " << aligned_n
+                  << ", Offset: " << offset << ", Ptr: " << ptr << std::endl;
+
         return ptr;
     }
 
@@ -164,6 +170,7 @@ class NPUAllocator : public c10::Allocator {
 public:
     c10::DataPtr allocate(size_t n) override {
         void* ptr = get_allocator_state().allocate(n);
+        // Ensure Device is constructed correctly. index 0.
         return {ptr, ptr, &deleteNPU, c10::Device(c10::DeviceType::PrivateUse1, 0)};
     }
 
@@ -184,7 +191,10 @@ static NPUAllocator global_npu_allocator;
 
 uint64_t get_offset(const at::Tensor& t) {
     void* ptr = t.data_ptr();
-    if (!ptr) return 0; // Should not happen for allocated tensor
+    if (!ptr) {
+        std::cerr << "[x_tpu ERROR] get_offset called with null data_ptr!" << std::endl;
+        return 0;
+    }
     char* base = static_cast<char*>(get_conn().shm.buffer);
     return static_cast<char*>(ptr) - base;
 }
@@ -195,13 +205,27 @@ uint64_t get_offset(const at::Tensor& t) {
 
 at::Tensor npu_empty(at::IntArrayRef size, std::optional<at::ScalarType> dtype, std::optional<at::Layout> layout, std::optional<at::Device> device, std::optional<bool> pin_memory, std::optional<at::MemoryFormat> memory_format) {
 
-    std::cout << "[x_tpu] npu_empty called" << std::endl;
     int64_t nelement = 1;
     for (auto s : size) nelement *= s;
     size_t bytes = nelement * sizeof(float);
 
-    auto data_ptr = global_npu_allocator.allocate(bytes);
+    std::cout << "[x_tpu] npu_empty requesting " << bytes << " bytes." << std::endl;
 
+    auto data_ptr = global_npu_allocator.allocate(bytes);
+    void* raw_ptr = data_ptr.get();
+
+    // Debug DataPtr
+    std::cout << "[x_tpu] npu_empty got DataPtr with ptr: " << raw_ptr << std::endl;
+
+    // Create TensorImpl first
+    auto tensor = at::detail::make_tensor<c10::TensorImpl>(
+        c10::DispatchKeySet(c10::DispatchKey::PrivateUse1),
+        c10::scalarTypeToTypeMeta(dtype.value_or(at::kFloat)),
+        c10::Device(c10::DeviceType::PrivateUse1, 0)
+    );
+
+    // Create StorageImpl
+    // Note: We use c10::Storage to wrap the implementation to ensure proper refcounting
     auto storage_impl = c10::make_intrusive<c10::StorageImpl>(
         c10::StorageImpl::use_byte_size_t(),
         bytes,
@@ -210,21 +234,25 @@ at::Tensor npu_empty(at::IntArrayRef size, std::optional<at::ScalarType> dtype, 
         true
     );
 
-    return at::detail::make_tensor<c10::TensorImpl>(
-        std::move(storage_impl),
-        c10::DispatchKey::PrivateUse1,
-        c10::scalarTypeToTypeMeta(dtype.value_or(at::kFloat))
-    );
+    std::cout << "[x_tpu] storage_impl->data(): " << storage_impl->data() << std::endl;
+
+    // Link Storage to Tensor
+    tensor.unsafeGetTensorImpl()->set_storage_keep_dtype(std::move(storage_impl));
+
+    // Critical: Set sizes!
+    tensor.unsafeGetTensorImpl()->set_sizes_contiguous(size);
+
+    std::cout << "[x_tpu] tensor.data_ptr(): " << tensor.data_ptr() << " Sizes: " << tensor.sizes() << std::endl;
+
+    return tensor;
 }
 
 at::Tensor npu_empty_strided(at::IntArrayRef size, at::IntArrayRef stride, std::optional<at::ScalarType> dtype, std::optional<at::Layout> layout, std::optional<at::Device> device, std::optional<bool> pin_memory) {
-    std::cout << "[x_tpu] npu_empty_strided called" << std::endl;
-    // WARNING: Ignoring strides for allocation size calculation.
-    // Real implementation should calculate required storage size based on size + stride.
+    std::cout << "[x_tpu] npu_empty_strided called with size: " << size << std::endl;
+    // For now, we assume contiguous behavior for PrivateUse1 simple simulation
     return npu_empty(size, dtype, layout, device, pin_memory, std::nullopt);
 }
 
-// Correct signature for _copy_from
 at::Tensor npu_copy_from(const at::Tensor& self, const at::Tensor& dst, bool non_blocking) {
     std::cout << "[x_tpu] npu_copy_from called" << std::endl;
 
@@ -237,6 +265,10 @@ at::Tensor npu_copy_from(const at::Tensor& self, const at::Tensor& dst, bool non
         void* src_ptr = self.data_ptr();
         void* dst_ptr = dst.data_ptr();
         size_t nbytes = self.nbytes();
+
+        std::cout << "  Dst Ptr: " << dst_ptr << ", Src Ptr: " << src_ptr << ", Bytes: " << nbytes << std::endl;
+        std::cout << "  Dst Sizes: " << dst.sizes() << std::endl;
+        std::cout << "  Dst Storage Data: " << dst.storage().data() << std::endl;
 
         if (dst_ptr == nullptr || src_ptr == nullptr) {
              std::cerr << "FATAL: Null pointer in H2D copy" << std::endl;
@@ -255,6 +287,8 @@ at::Tensor npu_copy_from(const at::Tensor& self, const at::Tensor& dst, bool non
         void* dst_ptr = dst.data_ptr();
         size_t nbytes = self.nbytes();
 
+        std::cout << "  Dst Ptr: " << dst_ptr << ", Src Ptr: " << src_ptr << ", Bytes: " << nbytes << std::endl;
+
         if (dst_ptr == nullptr || src_ptr == nullptr) {
              std::cerr << "FATAL: Null pointer in D2H copy" << std::endl;
              return dst;
@@ -271,7 +305,6 @@ at::Tensor npu_copy_from(const at::Tensor& self, const at::Tensor& dst, bool non
     return dst;
 }
 
-// Correct signature for _copy_from_and_resize (2 args)
 at::Tensor npu_copy_from_and_resize(const at::Tensor& self, const at::Tensor& dst) {
     std::cout << "[x_tpu] npu_copy_from_and_resize called" << std::endl;
     return npu_copy_from(self, dst, false);

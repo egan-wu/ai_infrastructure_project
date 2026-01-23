@@ -3,6 +3,7 @@ from torch.utils.cpp_extension import load
 import os
 import glob
 import platform
+import shutil
 
 def load_extension():
     # Use absolute paths
@@ -40,16 +41,17 @@ def load_extension():
     # Include paths
     include_dirs = [os.path.join(cwd, "include")]
 
-    # Load extension
-    # We use a distinct name to ensure it doesn't conflict easily,
-    # though in this fallback scenario we just want it to work.
+    # Force rebuild by using a new name or cleaning
+    # We will use a dynamic name based on content hash or just random/timestamp if needed
+    # But for now, let's just use "custom_ops_v2"
+
     module = load(
-        name="custom_ops_jit",
+        name="custom_ops_v2",
         sources=sources,
         extra_cflags=extra_cflags,
         extra_cuda_cflags=extra_cuda_cflags,
         extra_include_paths=include_dirs,
-        verbose=True, # Verbose to show user it's compiling
+        verbose=True,
         with_cuda=with_cuda
     )
     return module
