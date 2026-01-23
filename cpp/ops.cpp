@@ -81,6 +81,18 @@ static NPUConnection& get_conn() {
     return conn;
 }
 
+// Helper to inspect memory
+void debug_print_shm(uint64_t offset, size_t count, const std::string& label) {
+    if (!get_conn().shm.is_valid()) return;
+    char* base = static_cast<char*>(get_conn().shm.buffer);
+    float* data = reinterpret_cast<float*>(base + offset);
+    std::cout << "[DEBUG SHM] " << label << " (Offset " << offset << ", " << count << " floats): [";
+    for (size_t i = 0; i < count; ++i) {
+        std::cout << data[i] << (i < count - 1 ? ", " : "");
+    }
+    std::cout << "]" << std::endl;
+}
+
 // ==========================================
 // 2. Linear Allocator with Simple Reuse
 // ==========================================
@@ -224,11 +236,9 @@ at::Tensor npu_empty(at::IntArrayRef size, std::optional<at::ScalarType> dtype, 
 }
 
 at::Tensor npu_empty_strided(at::IntArrayRef size, at::IntArrayRef stride, std::optional<at::ScalarType> dtype, std::optional<at::Layout> layout, std::optional<at::Device> device, std::optional<bool> pin_memory) {
-    // Ignoring strides for now
     return npu_empty(size, dtype, layout, device, pin_memory, std::nullopt);
 }
 
-// Native View Implementation (Metadata Alias)
 at::Tensor npu_view(const at::Tensor& self, at::IntArrayRef size) {
     auto inferred_size = at::infer_size(size, self.numel());
 
@@ -263,10 +273,12 @@ at::Tensor npu_copy_from(const at::Tensor& self, const at::Tensor& dst, bool non
         }
 
         std::memcpy(dst_ptr, src_ptr, nbytes);
+        debug_print_shm(get_offset(dst), nbytes / sizeof(float), "After H2D");
         get_conn().submit_command(OP_H2D_COPY, get_offset(dst), 0, 0, 0, 0, 0);
 
     } else if (src_is_npu && !dst_is_npu) {
         // D2H
+        debug_print_shm(get_offset(self), nbytes / sizeof(float), "Before D2H");
         get_conn().submit_command(OP_D2H_COPY, get_offset(self), 0, 0, 0, 0, 0);
 
         void* src_ptr = self.data_ptr();
@@ -296,6 +308,7 @@ at::Tensor npu_add(const at::Tensor& self, const at::Tensor& other, const at::Sc
     get_conn().submit_command(OP_COMPUTE_ADD,
                               get_offset(self), get_offset(other), get_offset(out),
                               self.numel(), 0, 0);
+    debug_print_shm(get_offset(out), out.numel(), "After Add");
     return out;
 }
 
@@ -346,33 +359,12 @@ void npu_exit() {
 // ==========================================
 
 void npu_fallback(const c10::OperatorHandle& op, torch::jit::Stack* stack) {
-    // Check if any tensor in stack is on x_tpu
     auto& arguments = *stack;
-    bool needs_fallback = false;
-    for (const auto& arg : arguments) {
-        if (arg.isTensor()) {
-            auto t = arg.toTensor();
-            if (t.defined() && t.device().type() == c10::DeviceType::PrivateUse1) {
-                needs_fallback = true;
-                break;
-            }
-        }
-    }
-
-    if (!needs_fallback) {
-        // Just call boxed, maybe pure CPU op that somehow got here?
-        op.callBoxed(stack);
-        return;
-    }
-
-    std::cout << "[x_tpu Warning] Operator " << op.schema().operator_name() << " is not implemented. Falling back to CPU." << std::endl;
-
-    // 1. Move Inputs to CPU
     for (size_t i = 0; i < arguments.size(); ++i) {
         if (arguments[i].isTensor()) {
             at::Tensor t = arguments[i].toTensor();
             if (t.defined() && t.device().type() == c10::DeviceType::PrivateUse1) {
-                // Direct robust copy using our primitives
+                // Direct copy
                 at::Tensor cpu_t = at::empty_like(t, at::TensorOptions().device(c10::kCPU));
                 npu_copy_from(t, cpu_t, false);
                 arguments[i] = cpu_t;
@@ -380,14 +372,11 @@ void npu_fallback(const c10::OperatorHandle& op, torch::jit::Stack* stack) {
         }
     }
 
-    // 2. Execute on CPU
     op.callBoxed(stack);
 
-    // 3. Move Outputs back to X_TPU
     for (size_t i = 0; i < arguments.size(); ++i) {
         if (arguments[i].isTensor()) {
             at::Tensor t = arguments[i].toTensor();
-            // If result is on CPU, move it back to NPU
             if (t.defined() && t.device().is_cpu()) {
                 at::Tensor npu_t = npu_empty(t.sizes(), t.scalar_type(), t.layout(),
                                              c10::Device(c10::DeviceType::PrivateUse1, 0),
