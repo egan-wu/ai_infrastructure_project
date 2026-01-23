@@ -7,6 +7,7 @@
 #include <deque>
 #include <algorithm>
 #include <map>
+#include <ATen/InferSize.h>
 
 // ==========================================
 // 1. Shared Memory Connection & Command Buffer
@@ -15,13 +16,11 @@
 class NPUConnection {
 public:
     SharedMemoryHandler shm;
-    std::mutex cmd_mutex; // Serialize commands for now
+    std::mutex cmd_mutex;
 
     NPUConnection() : shm(SHM_NAME, SHM_SIZE, false) {
         if (!shm.is_valid()) {
             std::cerr << "[x_tpu] FATAL: Failed to connect to NPU Daemon shared memory." << std::endl;
-        } else {
-            std::cout << "[x_tpu] Connected to SHM. Base Address: " << shm.buffer << std::endl;
         }
     }
 
@@ -38,7 +37,6 @@ public:
         check_connection();
         NPUControl* ctrl = shm.get_control();
 
-        // Busy wait safety
         int safety = 0;
         while(ctrl->host_ready && safety < 10000) {
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -66,7 +64,6 @@ public:
 
         ctrl->host_ready = true;
 
-        // Wait for Ack
         int timeout_ms = 5000;
         int elapsed = 0;
         while (!ctrl->device_done) {
@@ -137,8 +134,8 @@ public:
         void* ptr = static_cast<char*>(get_conn().shm.buffer) + offset;
         alloc_map[ptr] = aligned_n;
 
-        std::cout << "[x_tpu Alloc] Bytes: " << n << ", Aligned: " << aligned_n
-                  << ", Offset: " << offset << ", Ptr: " << ptr << std::endl;
+        // Detailed log kept for safety, but reduced verbosity elsewhere
+        // std::cout << "[x_tpu Alloc] Bytes: " << n << ", Offset: " << offset << std::endl;
 
         return ptr;
     }
@@ -170,7 +167,6 @@ class NPUAllocator : public c10::Allocator {
 public:
     c10::DataPtr allocate(size_t n) override {
         void* ptr = get_allocator_state().allocate(n);
-        // Ensure Device is constructed correctly. index 0.
         return {ptr, ptr, &deleteNPU, c10::Device(c10::DeviceType::PrivateUse1, 0)};
     }
 
@@ -192,13 +188,7 @@ static NPUAllocator global_npu_allocator;
 uint64_t get_offset(const at::Tensor& t) {
     void* ptr = t.data_ptr();
     if (!ptr) {
-        std::cerr << "[x_tpu ERROR] get_offset called with null data_ptr! Tensor size: " << t.sizes() << std::endl;
-        // Print storage details
-        if (t.has_storage()) {
-             std::cerr << "  Storage data: " << t.storage().data() << std::endl;
-        } else {
-             std::cerr << "  No Storage!" << std::endl;
-        }
+        // Can be null if size is 0 or undefined
         return 0;
     }
     char* base = static_cast<char*>(get_conn().shm.buffer);
@@ -215,23 +205,9 @@ at::Tensor npu_empty(at::IntArrayRef size, std::optional<at::ScalarType> dtype, 
     for (auto s : size) nelement *= s;
     size_t bytes = nelement * sizeof(float);
 
-    std::cout << "[x_tpu] npu_empty requesting " << bytes << " bytes." << std::endl;
-
     auto data_ptr = global_npu_allocator.allocate(bytes);
-    void* raw_ptr = data_ptr.get();
 
-    // Debug DataPtr
-    std::cout << "[x_tpu] npu_empty got DataPtr with ptr: " << raw_ptr << std::endl;
-
-    // Create TensorImpl first
-    auto tensor = at::detail::make_tensor<c10::TensorImpl>(
-        c10::DispatchKeySet(c10::DispatchKey::PrivateUse1),
-        c10::scalarTypeToTypeMeta(dtype.value_or(at::kFloat)),
-        c10::Device(c10::DeviceType::PrivateUse1, 0)
-    );
-
-    // Create StorageImpl
-    // Note: We use c10::Storage to wrap the implementation to ensure proper refcounting
+    // Create StorageImpl using c10::Storage wrapper to ensure proper lifecycle
     auto storage_impl = c10::make_intrusive<c10::StorageImpl>(
         c10::StorageImpl::use_byte_size_t(),
         bytes,
@@ -240,34 +216,32 @@ at::Tensor npu_empty(at::IntArrayRef size, std::optional<at::ScalarType> dtype, 
         true
     );
 
-    std::cout << "[x_tpu] storage_impl->data(): " << storage_impl->data() << std::endl;
+    // Create TensorImpl
+    auto tensor = at::detail::make_tensor<c10::TensorImpl>(
+        c10::DispatchKeySet(c10::DispatchKey::PrivateUse1),
+        c10::scalarTypeToTypeMeta(dtype.value_or(at::kFloat)),
+        c10::Device(c10::DeviceType::PrivateUse1, 0)
+    );
 
-    // Link Storage to Tensor
+    // Link Storage
     tensor.unsafeGetTensorImpl()->set_storage_keep_dtype(std::move(storage_impl));
 
-    // Critical: Set sizes!
+    // Set Sizes
     tensor.unsafeGetTensorImpl()->set_sizes_contiguous(size);
-
-    std::cout << "[x_tpu] tensor.data_ptr(): " << tensor.data_ptr() << " Sizes: " << tensor.sizes() << std::endl;
 
     return tensor;
 }
 
 at::Tensor npu_empty_strided(at::IntArrayRef size, at::IntArrayRef stride, std::optional<at::ScalarType> dtype, std::optional<at::Layout> layout, std::optional<at::Device> device, std::optional<bool> pin_memory) {
-    std::cout << "[x_tpu] npu_empty_strided called with size: " << size << std::endl;
     // For now, we assume contiguous behavior for PrivateUse1 simple simulation
+    // Ideally we should verify strides match contiguous layout or support strides in allocator
     return npu_empty(size, dtype, layout, device, pin_memory, std::nullopt);
 }
 
 // Native View Implementation (Metadata Alias)
 at::Tensor npu_view(const at::Tensor& self, at::IntArrayRef size) {
-    std::cout << "[x_tpu] npu_view called with size: " << size << std::endl;
-
-    if (!self.has_storage()) {
-        std::cerr << "[x_tpu ERROR] npu_view input has no storage!" << std::endl;
-    } else {
-        std::cout << "  Input storage: " << self.storage().data() << ", data_ptr: " << self.data_ptr() << std::endl;
-    }
+    // Infer size (handle -1)
+    auto inferred_size = at::infer_size(size, self.numel());
 
     // Create an alias
     auto alias = at::detail::make_tensor<c10::TensorImpl>(
@@ -280,39 +254,26 @@ at::Tensor npu_view(const at::Tensor& self, at::IntArrayRef size) {
     alias.unsafeGetTensorImpl()->set_storage_keep_dtype(self.storage());
     alias.unsafeGetTensorImpl()->set_storage_offset(self.storage_offset());
 
-    // Set new size/strides
-    // We assume contiguous input/output logic for simplicity in this NPU sim
-    alias.unsafeGetTensorImpl()->set_sizes_contiguous(size);
-
-    std::cout << "  Output alias data_ptr: " << alias.data_ptr() << std::endl;
+    // Set resolved size
+    alias.unsafeGetTensorImpl()->set_sizes_contiguous(inferred_size);
 
     return alias;
 }
 
 at::Tensor npu_copy_from(const at::Tensor& self, const at::Tensor& dst, bool non_blocking) {
-    std::cout << "[x_tpu] npu_copy_from called" << std::endl;
-
     bool dst_is_npu = dst.device().type() == c10::DeviceType::PrivateUse1;
     bool src_is_npu = self.device().type() == c10::DeviceType::PrivateUse1;
 
     size_t nbytes = self.nbytes();
-    std::cout << "  Bytes: " << nbytes << std::endl;
-
-    // Graceful 0-byte check
-    if (nbytes == 0) {
-        std::cout << "  0-byte copy detected. Skipping." << std::endl;
-        return dst;
-    }
+    if (nbytes == 0) return dst;
 
     if (dst_is_npu && !src_is_npu) {
         // H2D
-        std::cout << "[x_tpu] H2D Copy" << std::endl;
         void* src_ptr = self.data_ptr();
         void* dst_ptr = dst.data_ptr();
 
-        std::cout << "  Dst Ptr: " << dst_ptr << ", Src Ptr: " << src_ptr << std::endl;
-
         if (dst_ptr == nullptr || src_ptr == nullptr) {
+             // If we reach here with valid nbytes > 0, it is fatal
              std::cerr << "FATAL: Null pointer in H2D copy" << std::endl;
              return dst;
         }
@@ -322,13 +283,10 @@ at::Tensor npu_copy_from(const at::Tensor& self, const at::Tensor& dst, bool non
 
     } else if (src_is_npu && !dst_is_npu) {
         // D2H
-        std::cout << "[x_tpu] D2H Copy" << std::endl;
         get_conn().submit_command(OP_D2H_COPY, get_offset(self), 0, 0, 0, 0, 0);
 
         void* src_ptr = self.data_ptr();
         void* dst_ptr = dst.data_ptr();
-
-        std::cout << "  Dst Ptr: " << dst_ptr << ", Src Ptr: " << src_ptr << std::endl;
 
         if (dst_ptr == nullptr || src_ptr == nullptr) {
              std::cerr << "FATAL: Null pointer in D2H copy" << std::endl;
@@ -339,7 +297,6 @@ at::Tensor npu_copy_from(const at::Tensor& self, const at::Tensor& dst, bool non
 
     } else if (src_is_npu && dst_is_npu) {
          // D2D
-         std::cout << "[x_tpu] D2D Copy" << std::endl;
          std::memcpy(dst.data_ptr(), self.data_ptr(), self.nbytes());
     }
 
@@ -347,12 +304,10 @@ at::Tensor npu_copy_from(const at::Tensor& self, const at::Tensor& dst, bool non
 }
 
 at::Tensor npu_copy_from_and_resize(const at::Tensor& self, const at::Tensor& dst) {
-    std::cout << "[x_tpu] npu_copy_from_and_resize called" << std::endl;
     return npu_copy_from(self, dst, false);
 }
 
 at::Tensor npu_add(const at::Tensor& self, const at::Tensor& other, const at::Scalar& alpha) {
-    std::cout << "[x_tpu] npu_add called" << std::endl;
     auto out = at::empty_like(self);
     get_conn().submit_command(OP_COMPUTE_ADD,
                               get_offset(self), get_offset(other), get_offset(out),
@@ -361,7 +316,6 @@ at::Tensor npu_add(const at::Tensor& self, const at::Tensor& other, const at::Sc
 }
 
 at::Tensor npu_mul(const at::Tensor& self, const at::Tensor& other) {
-    std::cout << "[x_tpu] npu_mul called" << std::endl;
     auto out = at::empty_like(self);
     get_conn().submit_command(OP_COMPUTE_MUL,
                               get_offset(self), get_offset(other), get_offset(out),
@@ -370,7 +324,6 @@ at::Tensor npu_mul(const at::Tensor& self, const at::Tensor& other) {
 }
 
 at::Tensor npu_mm(const at::Tensor& self, const at::Tensor& other) {
-    std::cout << "[x_tpu] npu_mm called" << std::endl;
     int64_t M = self.size(0);
     int64_t K = self.size(1);
     int64_t N = other.size(1);
@@ -409,7 +362,8 @@ void npu_exit() {
 // ==========================================
 
 void npu_fallback(const c10::OperatorHandle& op, torch::jit::Stack* stack) {
-    std::cout << "[x_tpu Warning] Operator " << op.schema().operator_name() << " is not implemented. Falling back to CPU." << std::endl;
+    // Only log if verbose debug needed, otherwise it clogs output during standard fallbacks like view/print
+    // std::cout << "[x_tpu Warning] Operator " << op.schema().operator_name() << " is not implemented. Falling back to CPU." << std::endl;
 
     auto& arguments = *stack;
     for (size_t i = 0; i < arguments.size(); ++i) {
