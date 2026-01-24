@@ -3,59 +3,54 @@ import sys
 import subprocess
 import platform
 import time
-import signal
 
-def compile_daemon():
-    print("[Manager] Compiling NPU Daemon...")
+def compile_binaries():
+    print("[Manager] Compiling Drivers & Daemons...")
+
+    # Flags
     if platform.system() == "Windows":
-        cmd = "cl /EHsc /O2 cpp/npu_daemon.cpp /Fe:npu_daemon.exe"
+        # MSVC
+        cmd_driver = "cl /EHsc /O2 cpp/npu_driver.cpp /Fe:npu_driver.exe"
+        cmd_daemon = "cl /EHsc /O2 cpp/npu_daemon.cpp /Fe:npu_daemon.exe"
     else:
-        cmd = "g++ -O3 -pthread cpp/npu_daemon.cpp -o npu_daemon -lrt"
+        # GCC
+        cmd_driver = "g++ -O3 -pthread cpp/npu_driver.cpp -o npu_driver -lrt"
+        cmd_daemon = "g++ -O3 -pthread cpp/npu_daemon.cpp -o npu_daemon -lrt"
 
-    ret = os.system(cmd)
-    if ret != 0:
-        print("Failed to compile daemon.")
+    if os.system(cmd_driver) != 0:
+        print("Failed to compile npu_driver")
         sys.exit(1)
 
-def start_daemon(device_id):
-    print(f"[Manager] Starting NPU Daemon {device_id}...")
-    exe = "./npu_daemon" if platform.system() != "Windows" else "npu_daemon.exe"
-    proc = subprocess.Popen([exe, str(device_id)])
-    return proc
+    if os.system(cmd_daemon) != 0:
+        print("Failed to compile npu_daemon")
+        sys.exit(1)
 
 def main():
-    compile_daemon()
+    compile_binaries()
 
-    processes = []
+    print("\n[Manager] Launching NPU Driver Daemon (Resource Manager)...")
+    exe_driver = "./npu_driver" if platform.system() != "Windows" else "npu_driver.exe"
+    p_driver = subprocess.Popen([exe_driver])
 
-    # Launch 2 Devices
+    # Give it time to create SHM
+    time.sleep(1)
+
+    print("[Manager] Launching NPU Hardware Daemon (Compute Unit)...")
+    exe_daemon = "./npu_daemon" if platform.system() != "Windows" else "npu_daemon.exe"
+    p_daemon = subprocess.Popen([exe_daemon])
+
+    print("\n[Manager] System Online. Press Ctrl+C to shutdown.\n")
+
     try:
-        p0 = start_daemon(0)
-        processes.append(p0)
-
-        p1 = start_daemon(1)
-        processes.append(p1)
-
-        print("\n[Manager] NPU Cluster is running.")
-        print("[Manager] Press Ctrl+C to stop all devices.\n")
-
-        # Keep alive
-        while True:
-            time.sleep(1)
-            # Check if processes are still alive
-            if p0.poll() is not None or p1.poll() is not None:
-                print("[Manager] A daemon exited unexpectedly!")
-                break
-
+        p_driver.wait()
+        p_daemon.wait()
     except KeyboardInterrupt:
-        print("\n[Manager] Shutting down cluster...")
+        print("\n[Manager] Shutting down...")
     finally:
-        for p in processes:
-            try:
-                p.terminate()
-            except:
-                pass
-            p.wait()
+        try: p_daemon.terminate()
+        except: pass
+        try: p_driver.terminate()
+        except: pass
         print("[Manager] Stopped.")
 
 if __name__ == "__main__":

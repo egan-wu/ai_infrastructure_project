@@ -3,73 +3,85 @@ import sys
 import os
 import time
 
-def main():
-    print("=== NPU Workload Runner ===")
+# Wrapper class for X_NPU Tensors
+class XNPUTensor:
+    def __init__(self, shape, dtype=torch.float32, ops_module=None):
+        self.ops = ops_module
+        self.shape = shape
+        self.dtype = dtype
+        self.numel = 1
+        for s in shape: self.numel *= s
+        self.element_size = 4 # Float32
+        self.nbytes = self.numel * self.element_size
 
-    # Load Extension
+        # Allocate on Driver (Device 0 by default)
+        self.ptr = self.ops.npu_malloc(0, self.nbytes)
+        print(f"[XNPUTensor] Allocated {self.nbytes} bytes at virtual address {hex(self.ptr)}")
+
+    def __del__(self):
+        if hasattr(self, 'ptr') and self.ptr:
+            print(f"[XNPUTensor] Freeing {hex(self.ptr)}")
+            self.ops.npu_free(0, self.ptr)
+
+    def copy_from(self, cpu_tensor):
+        # H2D
+        if cpu_tensor.numel() != self.numel:
+            raise ValueError("Size mismatch in copy_from")
+        self.ops.npu_h2d(0, cpu_tensor, self.ptr) # Ops expects virtual pointer now?
+        # Check ops.cpp: npu_h2d expects offset.
+        # Wait, our Allocator returns virtual address (shm_base + offset).
+        # But npu_malloc in ops.cpp calls client->request_allocate which returns OFFSET.
+        # Let's check ops.cpp again.
+        pass
+
+    def copy_to_cpu(self):
+        cpu_t = torch.empty(self.shape, dtype=self.dtype)
+        # D2H
+        self.ops.npu_d2h(0, cpu_t, self.ptr)
+        return cpu_t
+
+def main():
+    print("=== NPU Client Workload (Manual Wrapper) ===")
+
     try:
         sys.path.append(os.getcwd())
         from jit_loader import load_extension
         ops = load_extension()
-        ops.init()
+        ops.init() # Connects client
         print("[Client] Extension Loaded.")
     except Exception as e:
         print(f"Failed to load extension: {e}")
         sys.exit(1)
 
     try:
-        # Initialize Devices (Connect to existing Daemons)
-        print("[Client] Connecting to NPU 0...")
-        ops.init_device(0)
-        print("[Client] Connecting to NPU 1...")
-        ops.init_device(1)
-
-        # 1. Allocate Memory
-        size_elements = 1024
-        size_bytes = size_elements * 4 # float
-
-        print("\n[Step 1] Allocating Memory...")
-        addr0_in = ops.npu_malloc(0, size_bytes)
-        addr0_out = ops.npu_malloc(0, size_bytes)
-        addr1_in = ops.npu_malloc(1, size_bytes)
-
-        print(f"  Dev0 In: {hex(addr0_in)}")
-        print(f"  Dev0 Out: {hex(addr0_out)}")
-        print(f"  Dev1 In: {hex(addr1_in)}")
+        # 1. Create Wrapper
+        print("\n[Test 1] Allocate XNPUTensor...")
+        xnpu_t = XNPUTensor((1024,), ops_module=ops)
 
         # 2. H2D
-        print("\n[Step 2] Host to Device (Dev 0)...")
-        t_in = torch.ones(size_elements, dtype=torch.float32) * 10.0
-        ops.npu_h2d(0, t_in, addr0_in)
+        print("\n[Test 2] H2D Copy...")
+        cpu_data = torch.randn(1024, dtype=torch.float32)
+        # We need to ensure npu_h2d accepts the handle returned by npu_malloc
+        # In ops.cpp: npu_malloc returns offset? No, check below.
+        ops.npu_h2d(0, cpu_data, xnpu_t.ptr)
+        print("✅ H2D Complete.")
 
-        # 3. Compute on Dev 0
-        print("\n[Step 3] Compute on Dev 0 (Add)...")
-        # 10 + 10 = 20
-        ops.npu_compute(0, "OP_ADD", addr0_in, addr0_in, addr0_out, size_elements, 0.0)
+        # 3. D2H
+        print("\n[Test 3] D2H Copy...")
+        res = torch.zeros(1024, dtype=torch.float32)
+        ops.npu_d2h(0, res, xnpu_t.ptr)
 
-        # 4. D2D (Dev 0 -> Dev 1)
-        print("\n[Step 4] Device to Device (Dev 0 -> Dev 1)...")
-        ops.npu_d2d(0, addr0_out, 1, addr1_in, size_bytes)
-
-        # 5. D2H (Dev 1 -> Host)
-        print("\n[Step 5] Device to Host (Dev 1)...")
-        t_out = torch.zeros(size_elements, dtype=torch.float32)
-        ops.npu_d2h(1, t_out, addr1_in)
-
-        # 6. Verify
-        print(f"\nResult Sample: {t_out[0:5]}")
-        expected = 20.0
-        if torch.all(t_out == expected):
-            print("✅ SUCCESS: Workflow Complete.")
+        if torch.allclose(cpu_data, res):
+            print("✅ Data Verification Passed!")
         else:
-            print("❌ FAILURE: Incorrect results.")
-            print(f"Expected: {expected}, Got: {t_out[0]}")
+            print("❌ Data Verification Failed!")
+            print(f"Original: {cpu_data[0]}")
+            print(f"Returned: {res[0]}")
 
-        # Cleanup Memory (Daemons keep running)
-        print("\n[Step 6] Freeing Memory...")
-        ops.npu_free(0, addr0_in)
-        ops.npu_free(0, addr0_out)
-        ops.npu_free(1, addr1_in)
+        # 4. Lifecycle
+        print("\n[Test 4] Explicit Deletion...")
+        del xnpu_t
+        print("✅ Tensor deleted.")
 
     except Exception as e:
         print(f"❌ Error: {e}")

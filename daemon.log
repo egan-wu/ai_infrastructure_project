@@ -1,0 +1,41 @@
+=== NPU Driver Daemon Started ===
+[Driver] Shared Memory Created (2GB).
+[NPU Hardware] Starting...
+[NPU Hardware] Connected to 2GB VRAM.
+[NPU Hardware] Idle loop (Ctrl+C to stop)...
+[Driver] Client 1 connected.
+[Driver] Allocated 4096 bytes at 0
+[Driver] Freed offset 0
+[Driver] Client 1 disconnected.
+[Driver] Client 2 connected.
+[Driver] Allocated 4096 bytes at 0
+[Driver] Freed offset 0
+[Driver] Client 2 disconnected.
+[Driver] Client 3 connected.
+[Driver] Allocated 4096 bytes at 0
+[Driver] Freed offset 0
+[Driver] Client 3 disconnected.
+[Driver] Client 4 connected.
+[Driver] Allocated 4096 bytes at 0
+[Driver] Freed offset 0
+[Driver] Client 4 disconnected.
+[Driver] Client 5 connected.
+[Driver] Allocated 4096 bytes at 0
+[Driver] Freed offset 0
+[Driver] Client 5 disconnected.
+[Driver] Client 6 connected.
+[Driver] Allocated 4096 bytes at 0
+[Driver] Freed offset 0
+[Driver] Client 6 disconnected.
+[Driver] Client 7 connected.
+[Driver] Allocated 4096 bytes at 0
+[Driver] Client 7 disconnected.
+[Driver] Cleaning up 1 allocations for client 7
+[Manager] Compiling Drivers & Daemons...
+
+[Manager] Launching NPU Driver Daemon (Resource Manager)...
+[Manager] Launching NPU Hardware Daemon (Compute Unit)...
+
+[Manager] System Online. Press Ctrl+C to shutdown.
+
+[Manager] Stopped.
