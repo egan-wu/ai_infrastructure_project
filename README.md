@@ -1,113 +1,86 @@
-# PyTorch C++ Extension Template
+# PyTorch C++ Extension Template & Multi-NPU Simulation
 
-This project is a robust template for creating PyTorch C++ Extensions. It demonstrates how to integrate custom C++ and CUDA kernels into PyTorch using both Ahead-of-Time (AOT) compilation and Just-In-Time (JIT) compilation.
+This project provides a robust template for PyTorch C++ Extensions and features a **Cross-Process Multi-NPU Simulation Framework**. It demonstrates how to integrate custom hardware accelerators into PyTorch using Shared Memory (IPC) for host-device communication.
 
 ## Project Structure
 
 ```
 .
 ├── cpp/
-│   ├── bindings.cpp    # Pybind11 module definitions
-│   ├── ops.cpp         # CPU implementation using TensorAccessor
-│   ├── ops.h           # Header declarations
-│   └── cuda_ops.cu     # CUDA kernel skeleton
-├── include/            # Directory for external headers
-├── lib/                # Directory for external libraries
-├── setup.py            # Script for AOT compilation
-├── jit_loader.py       # Script for JIT loading
-└── test.py             # Verification script
+│   ├── bindings.cpp          # Pybind11 module definitions
+│   ├── ops.cpp               # Host Driver & PyTorch Logic
+│   ├── ops.h                 # Header declarations
+│   ├── npu_daemon.cpp        # Standalone NPU Simulator Daemon (Device)
+│   ├── npu_protocol.h        # Shared Memory Protocol
+│   ├── npu_mem_manager.h     # Host-side Memory Allocator
+│   └── npu_device_manager.h  # Global Device Manager
+├── setup.py                  # AOT compilation script
+├── jit_loader.py             # JIT compilation script
+├── main.py                   # Multi-NPU Simulation Workflow
+└── test.py                   # Basic Functional Tests
 ```
+
+## Features
+
+-   **Multi-NPU Support**: Simulates multiple independent NPU devices, each with its own Shared Memory address space.
+-   **Global Resource Manager**: Centralized `NPUDeviceManager` handles device connections and context.
+-   **Memory Management**: Custom `NPUMemoryAllocator` implementing a coalescing free-list strategy for managing device memory (16MB per device).
+-   **P2P Communication**: Supports `npu_d2d` (Device-to-Device) copies simulated via Host DMA.
+-   **Manual Driver API**: Exposes low-level driver controls to Python (`malloc`, `free`, `h2d`, `d2h`, `compute`).
 
 ## Prerequisites
 
-- **Python**: 3.9+
-- **PyTorch**: 2.0+
-- **C++ Compiler**:
-  - Linux: GCC/G++
-  - macOS: Clang
-  - Windows: MSVC
-- **Build Tool**: Ninja (recommended for faster builds)
+-   **Python**: 3.9+
+-   **PyTorch**: 2.0+
+-   **C++ Compiler**:
+    -   Linux: GCC/G++
+    -   Windows: MSVC
+-   **Build Tool**: Ninja (recommended)
 
 ```bash
 pip install torch ninja
 ```
 
-## Usage
+## Running the Multi-NPU Simulation
 
-### 1. Testing (Recommended First Step)
+The `main.py` script demonstrates a full workflow involving two NPU devices.
 
-The `test.py` script demonstrates both JIT and AOT workflows and verifies the correctness of the custom operator.
+1.  **Functionality**:
+    -   Compiles and starts two `npu_daemon` processes (Device 0 and Device 1).
+    -   Allocates memory on both devices.
+    -   Transfers data to NPU 0 (H2D).
+    -   Executes an `ADD` operation on NPU 0.
+    -   Transfers the result from NPU 0 to NPU 1 (P2P/D2D).
+    -   Retrieves the result from NPU 1 to Host (D2H).
+    -   Verifies correctness.
 
-```bash
-python test.py
-```
+2.  **Run**:
+    ```bash
+    python main.py
+    ```
 
-**Expected Output (CPU):**
-```
-=== Testing JIT Compilation ===
-... (compilation logs) ...
-Testing on cpu...
-✅ Correctness check passed on cpu!
+## Python API Reference
 
-=== Testing AOT Compilation ===
-Testing on cpu...
-✅ Correctness check passed on cpu!
-```
-*(Note: If you haven't installed the AOT module yet, the AOT section might warn that the module is not found.)*
+The extension exposes the following API under the `custom_ops` module (loaded via JIT or AOT).
 
-### 2. Ahead-of-Time (AOT) Compilation
+### Management
+-   `init_device(device_id)`: Initializes connection to a specific NPU device.
 
-This method compiles the extension once and installs it as a standard Python package. Ideal for production.
+### Memory
+-   `npu_malloc(device_id, size)`: Allocates memory on the specified device. Returns a virtual handle.
+-   `npu_free(device_id, addr)`: Frees the memory at the given handle.
 
-**Build and Install:**
-```bash
-python setup.py install
-```
+### Data Movement
+-   `npu_h2d(device_id, tensor, dst_addr)`: Copies data from a Host Tensor to NPU memory.
+-   `npu_d2h(device_id, tensor, src_addr)`: Copies data from NPU memory to a Host Tensor.
+-   `npu_d2d(src_id, src_addr, dst_id, dst_addr, size)`: Copies data between two NPU devices.
 
-**Build In-place (for development):**
-```bash
-python setup.py build_ext --inplace
-```
+### Execution
+-   `npu_compute(device_id, opcode, src1, src2, dst, size, scalar)`: Submits a command to the NPU.
+    -   **Opcodes**: `OP_ADD`, `OP_SUB`, `OP_MUL`, `OP_MATMUL`, `OP_EXIT`.
 
-**Usage in Python:**
-```python
-import torch
-import custom_ops
+## Architecture Details
 
-a = torch.randn(10, 10)
-b = torch.randn(10, 10)
-result = custom_ops.weighted_sum(a, b, 0.5, 2.0)
-```
-
-### 3. Just-In-Time (JIT) Compilation
-
-This method compiles the C++ code at runtime. Ideal for rapid prototyping and development.
-
-**Usage in Python:**
-```python
-from jit_loader import load_extension
-
-custom_ops = load_extension()
-# Now you can use it just like the AOT module
-```
-
-## Example Logic
-
-The template implements a **Weighted Element-wise Sum**:
-$$C = \alpha \times A + \beta \times B$$
-
-It showcases:
-- **`torch::TensorAccessor`**: Efficient element-wise access on CPU.
-- **Input Validation**: Using `TORCH_CHECK` to ensure tensor shapes and types match.
-- **Device Dispatch**: Automatically routing execution to CPU or CUDA implementations based on input tensor device.
-
-## CUDA Support
-
-The project is pre-configured for CUDA.
-- If a CUDA-capable GPU and the `nvcc` compiler are detected, `setup.py` and `jit_loader.py` will automatically compile `cpp/cuda_ops.cu` and define `-DWITH_CUDA`.
-- The `weighted_sum` function checks the device of the input tensors and calls the appropriate kernel.
-
-To add your own CUDA logic:
-1.  Implement your kernel in `cpp/cuda_ops.cu`.
-2.  Expose the function in `cpp/ops.h`.
-3.  Call it from the dispatcher in `cpp/ops.cpp`.
+1.  **Device Context**: Each `NPUDeviceContext` manages a `SharedMemoryHandler` and an `NPUMemoryAllocator`.
+2.  **Handles**: Pointers returned to Python are 64-bit encoded handles containing both the `device_id` (high 32 bits) and the `offset` (low 32 bits).
+3.  **Daemon**: The `npu_daemon` is a standalone C++ process. It accepts a `device_id` argument to determine which Shared Memory segment to attach to (e.g., `Local\NPU_SHM_0`).
