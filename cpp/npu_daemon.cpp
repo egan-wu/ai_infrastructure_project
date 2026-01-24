@@ -4,6 +4,7 @@
 #include <thread>
 #include <atomic>
 #include <iomanip>
+#include <string>
 
 // This class simulates the NPU Core.
 class NPUCore {
@@ -53,21 +54,31 @@ public:
     }
 };
 
-void log_command(const std::string& op_name, uint64_t src1, uint64_t src2, uint64_t dst, uint32_t size) {
-    std::cout << "[NPU Daemon] Executing " << op_name
+void log_command(int device_id, const std::string& op_name, uint64_t src1, uint64_t src2, uint64_t dst, uint32_t size) {
+    std::cout << "[NPU Daemon " << device_id << "] Executing " << op_name
               << " | Src1: 0x" << std::hex << src1
               << ", Src2: 0x" << src2
               << ", Dst: 0x" << dst
               << ", Size: " << std::dec << size << std::endl;
 }
 
-int main() {
-    std::cout << "[NPU Daemon] Starting..." << std::endl;
+int main(int argc, char* argv[]) {
+    int device_id = 0;
+    if (argc > 1) {
+        try {
+            device_id = std::stoi(argv[1]);
+        } catch (...) {
+            std::cerr << "Invalid Device ID argument. Defaulting to 0." << std::endl;
+            device_id = 0;
+        }
+    }
 
-    SharedMemoryHandler shm(SHM_NAME, SHM_SIZE, true);
+    std::cout << "[NPU Daemon " << device_id << "] Starting..." << std::endl;
+
+    SharedMemoryHandler shm(get_shm_name(device_id), SHM_SIZE, true);
 
     if (!shm.is_valid()) {
-        std::cerr << "[NPU Daemon] Failed to initialize Shared Memory." << std::endl;
+        std::cerr << "[NPU Daemon " << device_id << "] Failed to initialize Shared Memory (" << get_shm_name(device_id) << ")." << std::endl;
         return 1;
     }
 
@@ -79,7 +90,7 @@ int main() {
 
     NPUCore core;
 
-    std::cout << "[NPU Daemon] Waiting for commands..." << std::endl;
+    std::cout << "[NPU Daemon " << device_id << "] Waiting for commands..." << std::endl;
 
     bool running = true;
     while (running) {
@@ -89,11 +100,11 @@ int main() {
 
             switch (ctrl->opcode) {
                 case OP_H2D_COPY:
-                    std::cout << "[NPU Daemon] OP_H2D_COPY: Host copied data to Device." << std::endl;
+                    std::cout << "[NPU Daemon " << device_id << "] OP_H2D_COPY: Host copied data to Device." << std::endl;
                     break;
 
                 case OP_D2H_COPY:
-                    std::cout << "[NPU Daemon] OP_D2H_COPY: Host requested data from Device." << std::endl;
+                    std::cout << "[NPU Daemon " << device_id << "] OP_D2H_COPY: Host requested data from Device." << std::endl;
                     break;
 
                 case OP_COMPUTE_ADD: {
@@ -101,13 +112,13 @@ int main() {
                     if (ctrl->src_offset_1 + bytes_needed > SHM_SIZE ||
                         ctrl->src_offset_2 + bytes_needed > SHM_SIZE ||
                         ctrl->dst_offset + bytes_needed > SHM_SIZE) {
-                         std::cerr << "[NPU Daemon] Error: Memory access out of bounds!" << std::endl;
+                         std::cerr << "[NPU Daemon " << device_id << "] Error: Memory access out of bounds!" << std::endl;
                     } else {
                         float* src1 = reinterpret_cast<float*>(base_addr + ctrl->src_offset_1);
                         float* src2 = reinterpret_cast<float*>(base_addr + ctrl->src_offset_2);
                         float* dst = reinterpret_cast<float*>(base_addr + ctrl->dst_offset);
 
-                        log_command("OP_ADD", ctrl->src_offset_1, ctrl->src_offset_2, ctrl->dst_offset, ctrl->size_1);
+                        log_command(device_id, "OP_ADD", ctrl->src_offset_1, ctrl->src_offset_2, ctrl->dst_offset, ctrl->size_1);
                         core.compute_add_tensors(src1, src2, dst, ctrl->size_1);
                     }
                     break;
@@ -118,13 +129,13 @@ int main() {
                     if (ctrl->src_offset_1 + bytes_needed > SHM_SIZE ||
                         ctrl->src_offset_2 + bytes_needed > SHM_SIZE ||
                         ctrl->dst_offset + bytes_needed > SHM_SIZE) {
-                         std::cerr << "[NPU Daemon] Error: Memory access out of bounds!" << std::endl;
+                         std::cerr << "[NPU Daemon " << device_id << "] Error: Memory access out of bounds!" << std::endl;
                     } else {
                         float* src1 = reinterpret_cast<float*>(base_addr + ctrl->src_offset_1);
                         float* src2 = reinterpret_cast<float*>(base_addr + ctrl->src_offset_2);
                         float* dst = reinterpret_cast<float*>(base_addr + ctrl->dst_offset);
 
-                        log_command("OP_SUB", ctrl->src_offset_1, ctrl->src_offset_2, ctrl->dst_offset, ctrl->size_1);
+                        log_command(device_id, "OP_SUB", ctrl->src_offset_1, ctrl->src_offset_2, ctrl->dst_offset, ctrl->size_1);
                         core.compute_sub_tensors(src1, src2, dst, ctrl->size_1);
                     }
                     break;
@@ -135,13 +146,13 @@ int main() {
                     if (ctrl->src_offset_1 + bytes_needed > SHM_SIZE ||
                         ctrl->src_offset_2 + bytes_needed > SHM_SIZE ||
                         ctrl->dst_offset + bytes_needed > SHM_SIZE) {
-                         std::cerr << "[NPU Daemon] Error: Memory access out of bounds!" << std::endl;
+                         std::cerr << "[NPU Daemon " << device_id << "] Error: Memory access out of bounds!" << std::endl;
                     } else {
                         float* src1 = reinterpret_cast<float*>(base_addr + ctrl->src_offset_1);
                         float* src2 = reinterpret_cast<float*>(base_addr + ctrl->src_offset_2);
                         float* dst = reinterpret_cast<float*>(base_addr + ctrl->dst_offset);
 
-                        log_command("OP_MUL", ctrl->src_offset_1, ctrl->src_offset_2, ctrl->dst_offset, ctrl->size_1);
+                        log_command(device_id, "OP_MUL", ctrl->src_offset_1, ctrl->src_offset_2, ctrl->dst_offset, ctrl->size_1);
                         core.compute_mul(src1, src2, dst, ctrl->size_1);
                     }
                     break;
@@ -159,13 +170,13 @@ int main() {
                     if (ctrl->src_offset_1 + size_1_bytes > SHM_SIZE ||
                         ctrl->src_offset_2 + size_2_bytes > SHM_SIZE ||
                         ctrl->dst_offset + size_dst_bytes > SHM_SIZE) {
-                         std::cerr << "[NPU Daemon] Error: Memory access out of bounds!" << std::endl;
+                         std::cerr << "[NPU Daemon " << device_id << "] Error: Memory access out of bounds!" << std::endl;
                     } else {
                         float* src1 = reinterpret_cast<float*>(base_addr + ctrl->src_offset_1);
                         float* src2 = reinterpret_cast<float*>(base_addr + ctrl->src_offset_2);
                         float* dst = reinterpret_cast<float*>(base_addr + ctrl->dst_offset);
 
-                        std::cout << "[NPU Daemon] Executing OP_MATMUL | "
+                        std::cout << "[NPU Daemon " << device_id << "] Executing OP_MATMUL | "
                                   << "Src1: 0x" << std::hex << ctrl->src_offset_1
                                   << ", Src2: 0x" << ctrl->src_offset_2
                                   << ", Dst: 0x" << ctrl->dst_offset
@@ -176,12 +187,12 @@ int main() {
                 }
 
                 case OP_EXIT:
-                    std::cout << "[NPU Daemon] OP_EXIT: Shutting down..." << std::endl;
+                    std::cout << "[NPU Daemon " << device_id << "] OP_EXIT: Shutting down..." << std::endl;
                     running = false;
                     break;
 
                 default:
-                    std::cerr << "[NPU Daemon] Unknown Opcode: " << ctrl->opcode << std::endl;
+                    std::cerr << "[NPU Daemon " << device_id << "] Unknown Opcode: " << ctrl->opcode << std::endl;
                     break;
             }
 
@@ -202,6 +213,6 @@ int main() {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 
-    std::cout << "[NPU Daemon] Exited gracefully." << std::endl;
+    std::cout << "[NPU Daemon " << device_id << "] Exited gracefully." << std::endl;
     return 0;
 }

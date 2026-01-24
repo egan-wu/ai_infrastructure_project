@@ -20,12 +20,17 @@
 #endif
 
 // Shared Memory Constants
-#ifdef _WIN32
-static const char* SHM_NAME = "Local\\NPU_SHM";
-#else
-static const char* SHM_NAME = "/npu_shm";
-#endif
 static const size_t SHM_SIZE = 16 * 1024 * 1024; // 16 MB
+
+inline std::string get_shm_name(int device_id) {
+    std::string base;
+#ifdef _WIN32
+    base = "Local\\NPU_SHM_";
+#else
+    base = "/npu_shm_";
+#endif
+    return base + std::to_string(device_id);
+}
 
 // OpCodes
 enum OpCode : uint32_t {
@@ -109,6 +114,7 @@ public:
 #else
         // POSIX Implementation
         if (is_server) {
+            shm_unlink(name.c_str()); // Ensure fresh start for server
             shm_fd = shm_open(name.c_str(), O_CREAT | O_RDWR, 0666);
             if (shm_fd == -1) {
                 perror("shm_open");
