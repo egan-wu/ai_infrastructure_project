@@ -16,7 +16,8 @@ This project provides a robust template for PyTorch C++ Extensions and features 
 │   └── npu_device_manager.h  # Global Device Manager
 ├── setup.py                  # AOT compilation script
 ├── jit_loader.py             # JIT compilation script
-├── main.py                   # Multi-NPU Simulation Workflow
+├── start_daemons.py          # Script to launch NPU Cluster
+├── run_workload.py           # Script to execute NPU jobs
 └── test.py                   # Basic Functional Tests
 ```
 
@@ -43,21 +44,28 @@ pip install torch ninja
 
 ## Running the Multi-NPU Simulation
 
-The `main.py` script demonstrates a full workflow involving two NPU devices.
+The simulation is split into two parts: the "Cluster Manager" that runs the devices, and the "Client" that submits workloads.
 
-1.  **Functionality**:
-    -   Compiles and starts two `npu_daemon` processes (Device 0 and Device 1).
-    -   Allocates memory on both devices.
-    -   Transfers data to NPU 0 (H2D).
-    -   Executes an `ADD` operation on NPU 0.
-    -   Transfers the result from NPU 0 to NPU 1 (P2P/D2D).
-    -   Retrieves the result from NPU 1 to Host (D2H).
-    -   Verifies correctness.
+### Step 1: Start the NPU Cluster
+Open a terminal and run:
+```bash
+python start_daemons.py
+```
+This will compile and launch two NPU Daemon processes (Device 0 and Device 1). Leave this running.
 
-2.  **Run**:
-    ```bash
-    python main.py
-    ```
+### Step 2: Run the Workload
+Open a second terminal and run:
+```bash
+python run_workload.py
+```
+This script will:
+1.  Connect to the running NPU Daemons.
+2.  Allocate memory on Device 0 and Device 1.
+3.  Transfer data to Device 0.
+4.  Execute a Compute Op (ADD) on Device 0.
+5.  Transfer the result from Device 0 to Device 1 (P2P).
+6.  Retrieve the final result from Device 1 to Host.
+7.  Verify correctness.
 
 ## Python API Reference
 
