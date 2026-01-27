@@ -180,8 +180,99 @@ void initialize_shm(void* addr) {
 }
 
 #ifdef _WIN32
-// ... (Windows implementation omitted for brevity, logic mirrors Linux)
-// Just ensuring initialization happens after MapViewOfFile
+void handle_client(HANDLE hPipe, uint64_t client_id) {
+    std::cout << "[Driver] Client " << client_id << " connected." << std::endl;
+
+    while (true) {
+        DriverHeader header;
+        DWORD bytesRead;
+        BOOL success = ReadFile(hPipe, &header, sizeof(header), &bytesRead, NULL);
+
+        if (!success || bytesRead == 0) break; // Disconnect
+
+        if (header.type == DriverMsgType::ALLOC_REQ) {
+            AllocReq req;
+            ReadFile(hPipe, &req, sizeof(req), &bytesRead, NULL);
+
+            AllocResp resp;
+            try {
+                resp.offset = manager.allocate(req.size, client_id);
+                // Send Header + Resp
+                DriverHeader r_head = {DriverMsgType::ALLOC_RESP, sizeof(resp)};
+                DWORD written;
+                WriteFile(hPipe, &r_head, sizeof(r_head), &written, NULL);
+                WriteFile(hPipe, &resp, sizeof(resp), &written, NULL);
+                std::cout << "[Driver] Allocated " << req.size << " bytes at " << resp.offset << std::endl;
+            } catch(...) {
+                DriverHeader r_head = {DriverMsgType::ERROR_RESP, 0};
+                DWORD written;
+                WriteFile(hPipe, &r_head, sizeof(r_head), &written, NULL);
+            }
+
+        } else if (header.type == DriverMsgType::FREE_REQ) {
+            FreeReq req;
+            ReadFile(hPipe, &req, sizeof(req), &bytesRead, NULL);
+            manager.free(req.offset, client_id);
+            // Ack
+            DriverHeader r_head = {DriverMsgType::FREE_RESP, 0};
+            DWORD written;
+            WriteFile(hPipe, &r_head, sizeof(r_head), &written, NULL);
+            std::cout << "[Driver] Freed offset " << req.offset << std::endl;
+        }
+    }
+
+    std::cout << "[Driver] Client " << client_id << " disconnected." << std::endl;
+    manager.cleanup_client(client_id);
+    DisconnectNamedPipe(hPipe);
+    CloseHandle(hPipe);
+}
+
+void run_server() {
+    uint64_t next_id = 1;
+
+    // Create Shared Memory
+    HANDLE hMapFile = CreateFileMappingA(
+        INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE,
+        (DWORD)(NPU_SHM_SIZE >> 32), (DWORD)(NPU_SHM_SIZE & 0xFFFFFFFF),
+        NPU_SHM_NAME);
+
+    if (hMapFile == NULL) {
+        std::cerr << "Failed to create SHM: " << GetLastError() << std::endl;
+        return;
+    }
+
+    void* base = MapViewOfFile(hMapFile, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0, 0);
+    if (base != NULL) {
+        initialize_shm(base);
+        // Keep mapped or unmap?
+        // initialize_shm uses placement new, so we initialized it.
+        // We can keep it or unmap. Let's unmap to save VA space in driver (it's 2GB).
+        UnmapViewOfFile(base);
+    }
+
+    std::cout << "[Driver] Shared Memory Created (2GB)." << std::endl;
+
+    while (true) {
+        HANDLE hPipe = CreateNamedPipeA(
+            NPU_DRIVER_PIPE,
+            PIPE_ACCESS_DUPLEX,
+            PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT,
+            PIPE_UNLIMITED_INSTANCES,
+            512, 512, 0, NULL);
+
+        if (hPipe == INVALID_HANDLE_VALUE) {
+            std::cerr << "CreateNamedPipe failed." << std::endl;
+            return;
+        }
+
+        if (ConnectNamedPipe(hPipe, NULL) ? TRUE : (GetLastError() == ERROR_PIPE_CONNECTED)) {
+            std::thread t(handle_client, hPipe, next_id++);
+            t.detach();
+        } else {
+            CloseHandle(hPipe);
+        }
+    }
+}
 #else
 void handle_client(int client_sock, uint64_t client_id) {
     std::cout << "[Driver] Client " << client_id << " connected." << std::endl;
