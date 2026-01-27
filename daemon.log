@@ -9,33 +9,35 @@
 [Driver] Allocated 1000 bytes at 10000
 [Driver] Allocated 1000 bytes at 11000
 [Driver] Allocated 1000 bytes at 12000
+[Driver] Allocated 1000 bytes at 13000
 [NPU Hardware] Command Received: 3
-[NPU Hardware] ADD Input 1: [0.488324, 2.00549, 1.16771, -0.169789, 0.419913]
-[NPU Hardware] ADD Input 2: [2.25176, 1.60955, 1.06597, -0.260481, 0.32095]
-[NPU Hardware] ADD Output: [2.74008, 3.61504, 2.23369, -0.430269, 0.740863]
-[Driver] Freed offset 10000
+[NPU Hardware] ADD Input 1: [0.0796988, 0.0814108, -0.460166, 0.219267, 0.294796]
+[NPU Hardware] ADD Input 2: [0.514227, -0.315544, 0.606325, -0.147316, 0.895963]
+[NPU Hardware] ADD Output: [0.593926, -0.234133, 0.146159, 0.0719511, 1.19076]
 [Driver] Freed offset 11000
 [Driver] Freed offset 12000
-[Driver] Allocated 1000 bytes at 10000
+[Driver] Freed offset 13000
 [Driver] Allocated 1000 bytes at 11000
 [Driver] Allocated 1000 bytes at 12000
+[Driver] Allocated 1000 bytes at 13000
 [NPU Hardware] Command Received: 7
-[NPU Hardware] SUB Input 1: [0.488324, 2.00549, 1.16771, -0.169789, 0.419913]
-[NPU Hardware] SUB Input 2: [2.25176, 1.60955, 1.06597, -0.260481, 0.32095]
-[NPU Hardware] SUB Output: [-1.76344, 0.395935, 0.101739, 0.0906923, 0.0989631]
-[Driver] Freed offset 10000
+[NPU Hardware] SUB Input 1: [-1.43289, -0.908697, -2.43074, 0.621173, -1.66443]
+[NPU Hardware] SUB Input 2: [0.375192, -0.837319, -0.396906, 1.3106, -0.93567]
+[NPU Hardware] SUB Output: [-1.80808, -0.0713783, -2.03384, -0.689424, -0.728758]
 [Driver] Freed offset 11000
 [Driver] Freed offset 12000
-[Driver] Allocated 1000 bytes at 10000
+[Driver] Freed offset 13000
 [Driver] Allocated 1000 bytes at 11000
 [Driver] Allocated 1000 bytes at 12000
+[Driver] Allocated 1000 bytes at 13000
 [NPU Hardware] Command Received: 4
-[NPU Hardware] MUL Input 1: [0.488324, 2.00549, 1.16771, -0.169789, 0.419913]
-[NPU Hardware] MUL Input 2: [2.25176, 1.60955, 1.06597, -0.260481, 0.32095]
-[NPU Hardware] MUL Output: [1.09959, 3.22793, 1.24475, 0.0442267, 0.134771]
-[Driver] Freed offset 10000
+[NPU Hardware] MUL Input 1: [-0.478882, 0.318383, 0.123121, -1.20783, -0.784495]
+[NPU Hardware] MUL Input 2: [2.41916, 0.257695, -0.615942, 0.363789, -1.48095]
+[NPU Hardware] MUL Output: [-1.15849, 0.0820458, -0.0758356, -0.439395, 1.1618]
 [Driver] Freed offset 11000
 [Driver] Freed offset 12000
+[Driver] Freed offset 13000
+[Driver] Freed offset 10000
 [Driver] Client 1 disconnected.
 [Manager] Compiling Drivers & Daemons...
 
