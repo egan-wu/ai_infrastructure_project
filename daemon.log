@@ -1,36 +1,50 @@
 === NPU Driver Daemon Started ===
+[Driver] Initialized SHM Control Struct at offset 0. Magic: 0xcafebabe
 [Driver] Shared Memory Created (2GB).
 [NPU Hardware] Starting...
-[NPU Hardware] Connected to 2GB VRAM.
-[NPU Hardware] Idle loop (Ctrl+C to stop)...
+[NPU Hardware] Connected. Checking Magic...
+[NPU Hardware] Magic OK: 0xcafebabe
+[NPU Hardware] Idle loop...
 [Driver] Client 1 connected.
-[Driver] Allocated 4096 bytes at 0
-[Driver] Freed offset 0
+[Driver] Allocated 1000 bytes at 10000
+[Driver] Allocated 1000 bytes at 11000
+[Driver] Allocated 1000 bytes at 12000
+[Driver] Freed offset 10000
+[Driver] Freed offset 11000
+[Driver] Freed offset 12000
 [Driver] Client 1 disconnected.
 [Driver] Client 2 connected.
-[Driver] Allocated 4096 bytes at 0
-[Driver] Freed offset 0
+[Driver] Allocated 1000 bytes at 10000
+[Driver] Allocated 1000 bytes at 11000
+[Driver] Allocated 1000 bytes at 12000
+[NPU Hardware] Command Received: 3
+[NPU Hardware] ADD Input 1: [-0.23321, -0.475709, 1.73193, 1.327, -0.249404]
+[NPU Hardware] ADD Input 2: [0.228681, 0.387305, 0.557348, 0.427341, 0.0661412]
+[NPU Hardware] ADD Output: [-0.00452904, -0.0884039, 2.28928, 1.75434, -0.183263]
+[Driver] Freed offset 10000
+[Driver] Freed offset 11000
+[Driver] Freed offset 12000
+[Driver] Allocated 1000 bytes at 10000
+[Driver] Allocated 1000 bytes at 11000
+[Driver] Allocated 1000 bytes at 12000
+[NPU Hardware] Command Received: 7
+[NPU Hardware] SUB Input 1: [-0.23321, -0.475709, 1.73193, 1.327, -0.249404]
+[NPU Hardware] SUB Input 2: [0.228681, 0.387305, 0.557348, 0.427341, 0.0661412]
+[NPU Hardware] SUB Output: [-0.461892, -0.863015, 1.17458, 0.899657, -0.315545]
+[Driver] Freed offset 10000
+[Driver] Freed offset 11000
+[Driver] Freed offset 12000
+[Driver] Allocated 1000 bytes at 10000
+[Driver] Allocated 1000 bytes at 11000
+[Driver] Allocated 1000 bytes at 12000
+[NPU Hardware] Command Received: 4
+[NPU Hardware] MUL Input 1: [-0.23321, -0.475709, 1.73193, 1.327, -0.249404]
+[NPU Hardware] MUL Input 2: [0.228681, 0.387305, 0.557348, 0.427341, 0.0661412]
+[NPU Hardware] MUL Output: [-0.0533309, -0.184245, 0.965288, 0.567081, -0.0164959]
+[Driver] Freed offset 10000
+[Driver] Freed offset 11000
+[Driver] Freed offset 12000
 [Driver] Client 2 disconnected.
-[Driver] Client 3 connected.
-[Driver] Allocated 4096 bytes at 0
-[Driver] Freed offset 0
-[Driver] Client 3 disconnected.
-[Driver] Client 4 connected.
-[Driver] Allocated 4096 bytes at 0
-[Driver] Freed offset 0
-[Driver] Client 4 disconnected.
-[Driver] Client 5 connected.
-[Driver] Allocated 4096 bytes at 0
-[Driver] Freed offset 0
-[Driver] Client 5 disconnected.
-[Driver] Client 6 connected.
-[Driver] Allocated 4096 bytes at 0
-[Driver] Freed offset 0
-[Driver] Client 6 disconnected.
-[Driver] Client 7 connected.
-[Driver] Allocated 4096 bytes at 0
-[Driver] Client 7 disconnected.
-[Driver] Cleaning up 1 allocations for client 7
 [Manager] Compiling Drivers & Daemons...
 
 [Manager] Launching NPU Driver Daemon (Resource Manager)...

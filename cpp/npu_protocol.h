@@ -1,13 +1,10 @@
 #pragma once
 
 #include <cstdint>
+#include <cstddef>
+#include <atomic>
 #include <iostream>
 #include <string>
-#include <vector>
-#include <thread>
-#include <chrono>
-#include <cstring>
-#include <atomic>
 
 #ifdef _WIN32
 #define NOMINMAX
@@ -44,7 +41,9 @@ enum OpCode : uint32_t {
 };
 
 // Protocol Structure
-struct NPUControl {
+// Aligned to 64 bytes to prevent False Sharing
+struct alignas(64) NPUControl {
+    uint32_t magic;            // 0xCAFEBABE
     uint32_t opcode;           // Instruction ID
     uint64_t src_offset_1;     // Start address of input data 1 in SHM
     uint64_t src_offset_2;     // Start address of input data 2 in SHM (if needed)
@@ -57,8 +56,10 @@ struct NPUControl {
 
     float scalar;              // Parameter for scalar computation (legacy/optional)
 
-    volatile bool host_ready;
-    volatile bool device_done;
+    // Synchronization Flags
+    // We use atomic uint32_t to ensure cross-process visibility with correct memory ordering
+    std::atomic<uint32_t> host_ready;
+    std::atomic<uint32_t> device_done;
 };
 
 // Cross-Platform Shared Memory Handler
@@ -114,7 +115,8 @@ public:
 #else
         // POSIX Implementation
         if (is_server) {
-            shm_unlink(name.c_str()); // Ensure fresh start for server
+            // Only server unlinks
+            shm_unlink(name.c_str());
             shm_fd = shm_open(name.c_str(), O_CREAT | O_RDWR, 0666);
             if (shm_fd == -1) {
                 perror("shm_open");
