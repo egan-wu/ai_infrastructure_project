@@ -1,113 +1,60 @@
-# PyTorch C++ Extension Template
+# PyTorch NPU Driver Simulation (Three-Tier Architecture)
 
-This project is a robust template for creating PyTorch C++ Extensions. It demonstrates how to integrate custom C++ and CUDA kernels into PyTorch using both Ahead-of-Time (AOT) compilation and Just-In-Time (JIT) compilation.
+This project simulates a professional **Kernel/User-mode Driver Model** for a custom NPU, integrated into PyTorch.
 
-## Project Structure
+## Architecture
 
-```
-.
-├── cpp/
-│   ├── bindings.cpp    # Pybind11 module definitions
-│   ├── ops.cpp         # CPU implementation using TensorAccessor
-│   ├── ops.h           # Header declarations
-│   └── cuda_ops.cu     # CUDA kernel skeleton
-├── include/            # Directory for external headers
-├── lib/                # Directory for external libraries
-├── setup.py            # Script for AOT compilation
-├── jit_loader.py       # Script for JIT loading
-└── test.py             # Verification script
-```
+1.  **Driver Daemon (`npu_driver`)**:
+    -   Acts as the "Kernel Resource Manager".
+    -   Owns the **2GB Shared Memory** block (the hardware BAR).
+    -   Manages memory allocation via a First-Fit allocator.
+    -   Listens on a **Named Pipe** (Windows) or **Unix Socket** (Linux) for IPC.
+    -   Automatically reclaims memory if a client process crashes.
+
+2.  **Hardware Daemon (`npu_daemon`)**:
+    -   Simulates the NPU Compute Unit.
+    -   Attaches to the Shared Memory created by the Driver to access data.
+
+3.  **Client Extension (`x_npu` Backend)**:
+    -   PyTorch C++ Extension loaded via JIT.
+    -   Implements a custom memory client that forwards `allocate/free` requests to the Driver Daemon via IPC.
+    -   Maps the Shared Memory into its own address space for direct access (simulating BAR mapping).
 
 ## Prerequisites
 
-- **Python**: 3.9+
-- **PyTorch**: 2.0+
-- **C++ Compiler**:
-  - Linux: GCC/G++
-  - macOS: Clang
-  - Windows: MSVC
-- **Build Tool**: Ninja (recommended for faster builds)
-
-```bash
-pip install torch ninja
-```
+-   Python 3.9+
+-   PyTorch 2.0+
+-   C++ Compiler (MSVC or GCC)
+-   Ninja Build System
 
 ## Usage
 
-### 1. Testing (Recommended First Step)
-
-The `test.py` script demonstrates both JIT and AOT workflows and verifies the correctness of the custom operator.
-
+### 1. Start the System (Driver & Hardware)
+Open a terminal and run the cluster manager:
 ```bash
-python test.py
+python start_daemons.py
 ```
+*Output: Launches `npu_driver` (Alloc Server) and `npu_daemon` (Hardware Sim).*
 
-**Expected Output (CPU):**
-```
-=== Testing JIT Compilation ===
-... (compilation logs) ...
-Testing on cpu...
-✅ Correctness check passed on cpu!
-
-=== Testing AOT Compilation ===
-Testing on cpu...
-✅ Correctness check passed on cpu!
-```
-*(Note: If you haven't installed the AOT module yet, the AOT section might warn that the module is not found.)*
-
-### 2. Ahead-of-Time (AOT) Compilation
-
-This method compiles the extension once and installs it as a standard Python package. Ideal for production.
-
-**Build and Install:**
+### 2. Run the Client Workload
+Open a second terminal and run the Python script:
 ```bash
-python setup.py install
+python run_workload.py
 ```
+This script demonstrates:
+-   Connecting to the Driver IPC.
+-   Allocating memory using `XNPUTensor` (wrapper for manual driver API).
+-   Direct Data Movement (H2D/D2H) via shared memory copy.
+-   Robustness: If the script crashes, the Driver Daemon automatically cleans up allocations.
 
-**Build In-place (for development):**
-```bash
-python setup.py build_ext --inplace
-```
+## API Note
+Due to current PyTorch environment constraints with `PrivateUse1` backend registration, this project uses a Manual Driver API instead of `torch.device("x_npu")`.
+-   **Allocation**: `ops.npu_malloc(device_id, size)` -> Returns virtual pointer.
+-   **Data Transfer**: `ops.npu_h2d` / `ops.npu_d2h`.
+-   **Wrapper**: `XNPUTensor` class encapsulates lifecycle management.
 
-**Usage in Python:**
-```python
-import torch
-import custom_ops
-
-a = torch.randn(10, 10)
-b = torch.randn(10, 10)
-result = custom_ops.weighted_sum(a, b, 0.5, 2.0)
-```
-
-### 3. Just-In-Time (JIT) Compilation
-
-This method compiles the C++ code at runtime. Ideal for rapid prototyping and development.
-
-**Usage in Python:**
-```python
-from jit_loader import load_extension
-
-custom_ops = load_extension()
-# Now you can use it just like the AOT module
-```
-
-## Example Logic
-
-The template implements a **Weighted Element-wise Sum**:
-$$C = \alpha \times A + \beta \times B$$
-
-It showcases:
-- **`torch::TensorAccessor`**: Efficient element-wise access on CPU.
-- **Input Validation**: Using `TORCH_CHECK` to ensure tensor shapes and types match.
-- **Device Dispatch**: Automatically routing execution to CPU or CUDA implementations based on input tensor device.
-
-## CUDA Support
-
-The project is pre-configured for CUDA.
-- If a CUDA-capable GPU and the `nvcc` compiler are detected, `setup.py` and `jit_loader.py` will automatically compile `cpp/cuda_ops.cu` and define `-DWITH_CUDA`.
-- The `weighted_sum` function checks the device of the input tensors and calls the appropriate kernel.
-
-To add your own CUDA logic:
-1.  Implement your kernel in `cpp/cuda_ops.cu`.
-2.  Expose the function in `cpp/ops.h`.
-3.  Call it from the dispatcher in `cpp/ops.cpp`.
+## Windows Specifics
+-   Uses `CreateFileMapping` / `MapViewOfFile`.
+-   Uses `CreateNamedPipe` / `CallNamedPipe`.
+-   Shared Memory Name: `Local\X_NPU_SHM`
+-   Pipe Name: `\\.\pipe\x_npu_driver`
